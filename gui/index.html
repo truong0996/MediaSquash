@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Compressor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <!-- Custom Titlebar -->
+    <div class="titlebar">
+        <div class="titlebar-drag">
+            <span class="titlebar-icon">🗜️</span>
+            <span class="titlebar-title">Media Compressor</span>
+        </div>
+        <div class="titlebar-controls">
+            <button class="titlebar-btn" id="btn-minimize">─</button>
+            <button class="titlebar-btn" id="btn-maximize">□</button>
+            <button class="titlebar-btn btn-close" id="btn-close">✕</button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Folder Selection Section -->
+        <div class="section folder-section">
+            <div class="folder-row">
+                <label class="folder-label">
+                    <span class="icon">📂</span> Input Folder
+                </label>
+                <div class="folder-input-group">
+                    <input type="text" id="input-folder" class="folder-input"
+                        placeholder="Select a folder containing images/videos..." readonly>
+                    <button class="btn btn-browse" id="btn-input-browse">Browse</button>
+                </div>
+            </div>
+            <div class="folder-row">
+                <label class="folder-label">
+                    <span class="icon">📂</span> Output Folder
+                </label>
+                <div class="folder-input-group">
+                    <input type="text" id="output-folder" class="folder-input"
+                        placeholder="Select output destination..." readonly>
+                    <button class="btn btn-browse" id="btn-output-browse">Browse</button>
+                </div>
+            </div>
+            <div class="folder-options">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="recursive-scan">
+                    <span class="checkmark"></span>
+                    Include subfolders
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="flatten-output">
+                    <span class="checkmark"></span>
+                    Flatten output (no subfolders)
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="rename-only">
+                    <span class="checkmark"></span>
+                    Rename only (no compression)
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="category-by-year">
+                    <span class="checkmark"></span>
+                    Category by year
+                </label>
+            </div>
+            <div class="folder-options" style="margin-top: 8px;">
+                <span class="filter-label">File type:</span>
+                <label class="radio-label">
+                    <input type="radio" name="file-type" value="all" checked>
+                    <span class="radio-mark"></span>
+                    All
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="file-type" value="image">
+                    <span class="radio-mark"></span>
+                    Images only
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="file-type" value="video">
+                    <span class="radio-mark"></span>
+                    Videos only
+                </label>
+            </div>
+        </div>
+
+        <!-- Settings Section -->
+        <div class="section settings-section">
+            <h3 class="section-title">
+                <span class="icon">⚙️</span> Settings
+            </h3>
+            <div class="settings-grid">
+                <div class="setting-group">
+                    <label class="setting-label">Video Encoder</label>
+                    <div class="encoder-options">
+                        <label class="radio-label">
+                            <input type="radio" name="encoder" value="auto" checked>
+                            <span class="radio-mark"></span>
+                            Auto
+                        </label>
+                        <label class="radio-label" id="encoder-nvenc-label">
+                            <input type="radio" name="encoder" value="nvenc">
+                            <span class="radio-mark"></span>
+                            NVENC
+                            <span class="encoder-badge" id="nvenc-badge">N/A</span>
+                        </label>
+                        <label class="radio-label" id="encoder-amf-label">
+                            <input type="radio" name="encoder" value="amf">
+                            <span class="radio-mark"></span>
+                            AMF
+                            <span class="encoder-badge" id="amf-badge">N/A</span>
+                        </label>
+                        <label class="radio-label" id="encoder-qsv-label">
+                            <input type="radio" name="encoder" value="qsv">
+                            <span class="radio-mark"></span>
+                            QuickSync
+                            <span class="encoder-badge" id="qsv-badge">N/A</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="encoder" value="cpu">
+                            <span class="radio-mark"></span>
+                            CPU
+                        </label>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label">Image Quality <span class="setting-value"
+                            id="quality-value">75</span></label>
+                    <input type="range" id="quality-slider" class="slider" min="1" max="100" value="75">
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label">Video Quality (CRF) <span class="setting-value"
+                            id="crf-value">23</span></label>
+                    <input type="range" id="crf-slider" class="slider" min="0" max="51" value="23">
+                    <span class="slider-hint">Lower = Better quality, larger file</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- File List Section -->
+        <div class="section files-section">
+            <div class="files-header">
+                <h3 class="section-title">
+                    <span class="icon">📄</span> Files
+                    <span class="file-count" id="file-count"></span>
+                </h3>
+                <button class="btn btn-scan" id="btn-scan">Scan Folder</button>
+            </div>
+            <div class="file-list-container">
+                <div class="file-list" id="file-list">
+                    <div class="file-list-empty">
+                        Select a folder and click "Scan Folder" to view files
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress Section -->
+        <div class="section progress-section" id="progress-section" style="display: none;">
+            <div class="progress-bar-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="progress-text">
+                <span id="progress-text">0/0 files</span>
+                <span id="progress-percent">0%</span>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+            <button class="btn btn-primary btn-start" id="btn-start" disabled>
+                <span class="btn-icon">🚀</span> Start Compression
+            </button>
+            <button class="btn btn-danger btn-cancel" id="btn-cancel" style="display: none;">
+                <span class="btn-icon">⏹</span> Cancel
+            </button>
+        </div>
+
+        <!-- Summary Section -->
+        <div class="section summary-section" id="summary-section" style="display: none;">
+            <div class="summary-stats">
+                <div class="stat">
+                    <span class="stat-label">Saved</span>
+                    <span class="stat-value" id="stat-saved">-</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Time</span>
+                    <span class="stat-value" id="stat-time">-</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Encoder</span>
+                    <span class="stat-value" id="stat-encoder">-</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+
+</html>
