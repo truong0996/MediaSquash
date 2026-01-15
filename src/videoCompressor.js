@@ -56,6 +56,9 @@ async function compressVideo(inputPath, outputPath, options = {}) {
 
         // Create ffmpeg command
         let command = ffmpeg(inputPath)
+            // Explicitly map only first video and first audio stream
+            // Some iPhone MOV files have multiple streams including invalid ones (codec 'none')
+            .addOutputOptions(['-map', '0:v:0', '-map', '0:a:0?'])
             .videoCodec(encoderConfig.codec)
             .addOutputOptions(outputOptions)
             .audioCodec(settings.audioCodec)
@@ -87,8 +90,14 @@ async function compressVideo(inputPath, outputPath, options = {}) {
                 let compressedSize = getFileSize(outputPath);
                 let note = '';
 
-                // Use original file if compressed is larger
-                if (compressedSize > originalSize) {
+                // Check if we're converting container formats (e.g., MOV to MP4)
+                const inputExt = path.extname(inputPath).toLowerCase();
+                const isConvertingFormat = inputExt !== outputExt;
+
+                // Use original file if compressed is larger, but ONLY if not converting formats
+                // When converting formats (e.g., MOV to MP4), we must keep the re-encoded version
+                // to ensure audio codec compatibility
+                if (compressedSize > originalSize && !isConvertingFormat) {
                     try {
                         fs.copyFileSync(inputPath, outputPath);
                         setFileMetadata(inputPath, outputPath);
@@ -97,6 +106,8 @@ async function compressVideo(inputPath, outputPath, options = {}) {
                     } catch (err) {
                         console.error('Error reverting to original file:', err.message);
                     }
+                } else if (compressedSize > originalSize && isConvertingFormat) {
+                    note = ' (kept converted file for compatibility)';
                 }
 
                 resolve({

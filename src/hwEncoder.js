@@ -25,7 +25,9 @@ const ENCODER_CONFIGS = {
         name: 'NVIDIA NVENC',
         codec: 'h264_nvenc',
         // p4 preset is balanced, -cq is quality-based VBR (similar to CRF)
+        // -pix_fmt yuv420p converts 10-bit HEVC (Main 10) to 8-bit for NVENC compatibility
         getOutputOptions: (crf) => [
+            '-pix_fmt yuv420p',
             '-preset p4',
             '-rc vbr',
             `-cq ${crf}`,
@@ -38,7 +40,9 @@ const ENCODER_CONFIGS = {
         name: 'AMD AMF',
         codec: 'h264_amf',
         // quality preset, qp_i/qp_p for quality control (similar to CRF)
+        // -pix_fmt yuv420p for 10-bit HEVC compatibility
         getOutputOptions: (crf) => [
+            '-pix_fmt yuv420p',
             '-quality quality',
             `-qp_i ${crf}`,
             `-qp_p ${crf}`,
@@ -48,7 +52,9 @@ const ENCODER_CONFIGS = {
     qsv: {
         name: 'Intel QuickSync',
         codec: 'h264_qsv',
+        // -pix_fmt yuv420p for 10-bit HEVC compatibility
         getOutputOptions: (crf) => [
+            '-pix_fmt yuv420p',
             '-preset medium',
             `-global_quality ${crf}`,
             '-profile:v high'

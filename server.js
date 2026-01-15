@@ -172,14 +172,21 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
 
         // Generate new filename based on date
         const ext = path.extname(file.path);
+        const extLower = ext.toLowerCase();
+        // Convert MOV to MP4 for better compatibility (iPhone HEVC videos)
+        const isMovFile = file.type === 'video' && extLower === '.mov';
+        // Convert HEIC/HEIF to PNG for better compatibility (iPhone HEIC images)
+        const isHeicFile = file.type === 'image' && (extLower === '.heic' || extLower === '.heif');
+        const outputExt = isMovFile ? '.mp4' : (isHeicFile ? '.png' : ext);
         let newFilename;
         if (captureDate) {
             const baseName = formatDateForFilename(captureDate);
-            newFilename = baseName + ext;
+            newFilename = baseName + outputExt;
             yearFolder = captureDate.getFullYear().toString();
         } else {
-            // No date available, keep original name
-            newFilename = path.basename(file.path);
+            // No date available, keep original name but still convert MOV to MP4
+            const originalName = path.basename(file.path, ext);
+            newFilename = originalName + outputExt;
             yearFolder = 'other';
         }
 
@@ -201,9 +208,9 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
         // Handle duplicate filenames by adding counter
         if (fs.existsSync(outputPath)) {
             let counter = 1;
-            const baseNoExt = newFilename.slice(0, -ext.length);
+            const baseNoExt = newFilename.slice(0, -outputExt.length);
             while (fs.existsSync(outputPath)) {
-                const uniqueName = `${baseNoExt}_${counter}${ext}`;
+                const uniqueName = `${baseNoExt}_${counter}${outputExt}`;
                 outputPath = path.join(path.dirname(outputPath), uniqueName);
                 counter++;
             }
@@ -254,10 +261,30 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
 
             return { success: true, result };
         } catch (error) {
-            try {
-                fs.copyFileSync(file.path, outputPath);
-                setFileMetadata(file.path, outputPath);
-            } catch { }
+            // Log detailed error for debugging
+            // Error might be an object with 'error' property from videoCompressor
+            const errorMsg = error?.error || error?.message || JSON.stringify(error);
+            console.error(`\n❌ COMPRESSION FAILED: ${file.name}`);
+            console.error(`   Input: ${file.path}`);
+            console.error(`   Output: ${outputPath}`);
+            console.error(`   Error: ${errorMsg}`);
+
+            // For MOV files being converted to MP4, don't copy original (incompatible codec)
+            // Also clean up any partial output file that FFmpeg may have created
+            if (isMovFile) {
+                try {
+                    if (fs.existsSync(outputPath)) {
+                        fs.unlinkSync(outputPath);
+                        console.error(`   Cleaned up partial file`);
+                    }
+                } catch { }
+            } else {
+                // For other files, try to copy original as fallback
+                try {
+                    fs.copyFileSync(file.path, outputPath);
+                    setFileMetadata(file.path, outputPath);
+                } catch { }
+            }
             sendSSE('file-error', { index, error: error.message || 'Unknown error' });
             return { success: false };
         }
