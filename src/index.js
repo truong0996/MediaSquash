@@ -57,7 +57,7 @@ async function getFinalOutputPath(inputPath, options, defaultOutputPath) {
     let counter = 1;
 
     while (fs.existsSync(finalPath)) {
-        finalPath = path.join(dir, `${newName}(${counter})${ext}`);
+        finalPath = path.join(dir, `${newName}_${counter}${ext}`);
         counter++;
     }
 
@@ -156,7 +156,7 @@ async function processDirectory(inputDir, options, type = 'all') {
                 const dir = path.dirname(normalizedPath);
 
                 while (fs.existsSync(finalPath)) {
-                    finalPath = path.join(dir, `${name}(${counter})${ext}`);
+                    finalPath = path.join(dir, `${name}_${counter}${ext}`);
                     counter++;
                 }
                 return finalPath;

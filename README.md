@@ -5,9 +5,9 @@ A powerful Node.js tool for compressing images and videos with **GPU acceleratio
 ## ✨ Key Features
 
 - **🎮 GPU Acceleration**: NVIDIA NVENC, AMD AMF, Intel QuickSync support
-- **🖥️ Web GUI**: Modern dark-themed interface with real-time progress
-- **⚡ Worker Pool Processing**: True parallel processing - slots never idle waiting
-- **📁 Consistent Output**: All images → `.jpeg`, all videos → `.mp4`
+- **🖥️ Web GUI**: Modern dark-themed interface with separate Image/Video settings
+- **⚡ Parallel Processing**: Smart concurrency tuned for images and videos
+- **📁 Modern Formats**: Support for **WebP (default)** and **AVIF** for images, **H.265 (HEVC)** for videos
 - **📅 Smart Renaming**: Rename files by capture date (EXIF/metadata)
 - **📁 Flexible Output**: Flatten folders, organize by year, preserve structure
 - **🔒 Metadata Preservation**: Keeps GPS location, dates, and EXIF data
@@ -15,14 +15,15 @@ A powerful Node.js tool for compressing images and videos with **GPU acceleratio
 
 ## 🎯 Supported Hardware Encoders
 
-| Encoder | Brand | Codec | Speed |
-|---------|-------|-------|-------|
-| **NVENC** | NVIDIA GPU | h264_nvenc | ⚡⚡⚡ Fastest |
-| **AMF** | AMD GPU/APU | h264_amf | ⚡⚡⚡ Fast |
-| **QuickSync** | Intel CPU | h264_qsv | ⚡⚡⚡ Fast |
-| **x264** | CPU (Software) | libx264 | ⚡ Slow |
+| Encoder | Brand | Codec | Speed | Quality/Size |
+|---------|-------|-------|-------|--------------|
+| **NVENC** | NVIDIA GPU | h264_nvenc | ⚡⚡⚡ Fastest | Good |
+| **AMF** | AMD GPU/APU | h264_amf | ⚡⚡⚡ Fast | Good |
+| **QuickSync** | Intel CPU | h264_qsv | ⚡⚡⚡ Fast | Good |
+| **x264** | CPU (Software) | libx264 | 🐢 Slow | **Better** |
+| **x265** | CPU (Software) | libx265 | 🐢 Very Slow | **Best (HEVC)** |
 
-> Auto-detection finds the best encoder for your system!
+> Smart detection automatically enables the best encoder for your hardware!
 
 ## 📦 Installation
 
@@ -39,11 +40,12 @@ npm run gui
 ```
 
 This opens a browser at `http://localhost:3847` with:
-- Folder selection with recursive scanning
-- Encoder selection with availability badges
-- Quality and CRF sliders
-- Real-time progress updates
-- Options: flatten output, rename only, organize by year
+- **Separated Settings**: Clear distinction between Image and Video settings
+- **Smart Detection**: Automatically analyzes your hardware and selects the best encoder on startup
+- **Format Toggle**: Choose between JPEG, WebP (default), or AVIF for images
+- **Quality Sliders**: Precision control for Image Quality and Video CRF
+- **Real-time Progress**: Visual file-by-file status and overall progress bar
+- **Power Options**: Flatten output, rename only, organize by year folders
 
 ### GUI Options
 
@@ -68,66 +70,69 @@ node src/index.js all ./input -o ./output --recursive --encoder auto
 |------|-------------|
 | `-r, --recursive` | Search directories recursively |
 | `-o, --output <dir>` | Output directory |
-| `-e, --encoder <type>` | Encoder: `auto`, `nvenc`, `amf`, `qsv`, `cpu` |
+| `-e, --encoder <type>` | Encoder: `auto`, `nvenc`, `amf`, `qsv`, `x264`, `x265` |
+| `--image-format <fmt>`| Target: `webp` (default), `jpeg`, `avif` |
 | `--rename` | Rename files to capture date |
 | `--rename-only` | Rename without compression |
-| `-q, --quality <1-100>` | Image quality (default: 75) |
-| `-c, --crf <0-51>` | Video quality (default: 23, lower = better) |
-| `-p, --preset <preset>` | x264 preset: `ultrafast`, `veryfast`, etc. |
+| `-q, --quality <1-100>` | Image quality (default: 88, visually lossless) |
+| `-c, --crf <0-51>` | Video quality (default: 22, YouTube-level) |
+| `-p, --preset <preset>` | x264/x265 preset: `medium` (default), `fast`, `slow`, etc. |
+| `--flatten` | Output all files to a single directory (no subfolders) |
+| `--category-by-year` | Organize output into year-based folders (2023, 2024, etc.) |
+| `-j, --jobs <number>` | Parallel jobs for images (default: auto-detected) |
 
 ### Single File Compression
 
 ```bash
-# Image
-node src/index.js image input.jpg -o output.jpg -q 80
+# Image to WebP (Visually Lossless)
+node src/index.js image input.jpg -o output.webp -q 88
 
-# Video with NVENC
-node src/index.js video input.mp4 -o output.mp4 -e nvenc -c 23
+# Video with HEVC (Smallest File)
+node src/index.js video input.mp4 -o output.mp4 -e x265 -c 22
 ```
 
 ## 📁 Consistent Output Format
 
 All files are normalized to standard formats for consistency:
 
-| Input Format | Output Format | Notes |
-|--------------|---------------|-------|
-| `.jpg`, `.png`, `.webp`, `.heic`, `.heif`, etc. | `.jpeg` | Universal compatibility |
-| `.mov`, `.avi`, `.mkv`, `.mp4`, etc. | `.mp4` | Best streaming support |
+| Input Format | Output Format | Priority |
+|--------------|---------------|----------|
+| `.jpg`, `.png`, `.heic`, etc. | `.webp` (default) | Better compression, universally supported |
+| Any Image | `.jpeg`, `.avif` | Optional alternatives (see **Format Selection**) |
+| `.mov`, `.avi`, `.mkv`, etc. | `.mp4` | Dual support for H.264 (AVC) and H.265 (HEVC) |
 
-### HEIC/HEIF Handling
+### 🛠️ Format Selection
 
-iPhone HEIC photos are automatically converted to JPEG:
-- Primary: `heic-convert` library for native HEIC decoding
-- Fallback: Sharp for mislabeled or variant HEIC files
-- Corrupted files are copied as-is (no failure)
+- **In GUI**: Use the **Image Settings** radio buttons to switch between JPEG, WebP, and AVIF.
+- **In CLI**: Use the `--image-format <format>` flag (e.g., `--image-format jpeg`).
+
+| Format | When to use |
+|--------|-------------|
+| **WebP** | **Default.** Best for daily use—fast, tiny files, and works everywhere. |
+| **JPEG** | Use if you need to view photos on very old TVs or legacy software. |
+| **AVIF** | Use for your best photos to get the absolute smallest file size possible (slowest processing). |
+
+### 📱 HEIC/HEIF Handling
+
+iPhone HEIC photos are automatically converted to your **selected target format** (WebP, JPEG, or AVIF):
+
+- **Primary**: Uses `heic-convert` library for high-quality native decoding.
+- **Fallback**: Uses Sharp for variant or mislabeled HEIC files.
+- **Robustness**: Corrupted or unsupported variants are copied as-is to ensure no data loss.
 
 ## 📅 Smart Renaming
 
-Files are renamed based on capture date: `YYYYMMDD-HHMMSS.jpeg`
+Files are renamed based on capture date: `YYYYMMDD-HHMMSS.webp`
 
 | Source | Priority |
 |--------|----------|
 | **Images** | EXIF DateTimeOriginal → File Modified Date |
 | **Videos** | Metadata creation_time → File Modified Date |
 
-- **Duplicate handling (CLI)**: `20210313-143211(1).jpeg`, `20210313-143211(2).jpeg`
-- **Duplicate handling (GUI)**: `20210313-143211_1.jpeg`, `20210313-143211_2.jpeg`
-- **No metadata**: Falls back to file modified date
+- **Duplicate handling**: If multiple files have the same capture time, they are saved as `20210313-143211_1.webp`, `20210313-143211_2.webp`, etc.
+- **No metadata**: Falls back to the file modified date for naming.
 
-## ⚡ Performance Optimization
-
-### Worker Pool Pattern
-
-Unlike batch processing, our worker pool **immediately picks up the next item** when any slot finishes:
-
-```
-❌ Old: [Video1: 30min] [Video2: done, waiting...] [Video3: done, waiting...]
-✅ New: [Video1: 30min] [Video2→Video5→Video8→...] [Video3→Video6→Video9→...]
-```
-
-**Result**: 2-3x faster for mixed file sizes!
-
-### Dynamic Concurrency (GPU Encoding)
+## 🎮 Hardware Acceleration Efficiency
 
 Automatically scales based on your CPU for GPU encoding (NVENC/QSV):
 
@@ -152,8 +157,8 @@ JPEG, JPG, PNG, WebP, AVIF, TIFF, GIF, HEIC, HEIF
 MP4, MKV, AVI, MOV, WMV, FLV, WebM, 3GP, M4V, MPEG, MPG
 
 ### Output
-- All images → `.jpeg`
-- All videos → `.mp4`
+- **Images**: `.webp` (default), `.jpeg`, or `.avif`
+- **Videos**: `.mp4` (H.264 or H.265)
 
 ## 📊 Example Output
 
@@ -163,8 +168,10 @@ MP4, MKV, AVI, MOV, WMV, FLV, WebM, 3GP, M4V, MPEG, MPG
 
 🔍 Detecting available hardware encoders...
   ✓ NVIDIA NVENC: Available
+  ✓ AMD AMF: Available
   ✓ Intel QuickSync: Available
   ✓ Software x264: Always available
+  ✓ Software x265 (HEVC): Always available
 
 ⚡ Dynamic concurrency: 12 images, 6 videos (16 CPU cores detected)
    Video threads per worker: 2 (GPU encoding, threads for decoding)
@@ -182,20 +189,20 @@ Processing 5569 images and 645 videos...
 ## 🛠️ CLI Examples
 
 ```bash
-# GPU-accelerated compression with NVENC (NVIDIA)
+# GPU-accelerated H.264 with NVENC
 node src/index.js all "./Photos" -o "./Compressed" -r -e nvenc
 
-# AMD GPU compression with AMF
-node src/index.js all "./Photos" -o "./Compressed" -r -e amf
+# Software H.265 (HEVC) for maximum storage savings
+node src/index.js all "./Photos" -o "./Compressed" -r -e x265
 
-# Organize by year with Intel QuickSync
-node src/index.js all "./Memory" -o "./Sorted" -r -e qsv --rename
+# High-quality WebP images
+node src/index.js all "./Memory" -o "./Sorted" -r --image-format webp -q 88
 
 # Rename only (no compression)
 node src/index.js all "./Backup" -o "./Renamed" -r --rename-only
 
-# High quality encoding (lower CRF = better quality)
-node src/index.js all "./Videos" -o "./Output" -r -e auto -c 18
+# Ultra-high quality (visually lossless)
+node src/index.js all "./Videos" -o "./Output" -r -c 18 -q 92
 ```
 
 ## 📜 License
