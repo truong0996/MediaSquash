@@ -60,13 +60,26 @@ const ENCODER_CONFIGS = {
             '-profile:v high'
         ]
     },
-    cpu: {
+    x264: {
         name: 'Software (x264)',
         codec: 'libx264',
-        getOutputOptions: (crf, preset = 'veryfast', threads = 0) => [
+        // Medium preset: good quality/speed balance for users who prioritize quality
+        getOutputOptions: (crf, preset = 'medium', threads = 0) => [
             `-crf ${crf}`,
             `-preset ${preset}`,
             `-threads ${threads}`
+        ]
+    },
+    x265: {
+        name: 'Software (x265/HEVC)',
+        codec: 'libx265',
+        // x265 CRF scale is slightly different - same number = better quality than x264
+        // So CRF 22 in x265 ≈ CRF 20 in x264 quality, but 40% smaller file
+        getOutputOptions: (crf, preset = 'medium', threads = 0) => [
+            `-crf ${crf}`,
+            `-preset ${preset}`,
+            `-threads ${threads}`,
+            '-tag:v hvc1'  // Apple/QuickTime compatibility tag
         ]
     }
 };
@@ -136,7 +149,8 @@ async function detectAvailableEncoders(forceRecheck = false) {
         nvenc: false,
         amf: false,
         qsv: false,
-        cpu: true // Always available
+        x264: true, // Always available (CPU-based H.264)
+        x265: true // Always available (CPU-based HEVC)
     };
 
     // Check NVENC (NVIDIA)
@@ -192,12 +206,12 @@ async function getBestEncoder() {
     if (available.nvenc) return 'nvenc';
     if (available.amf) return 'amf';
     if (available.qsv) return 'qsv';
-    return 'cpu';
+    return 'x264';
 }
 
 /**
  * Get encoder configuration
- * @param {string} encoder - 'auto', 'nvenc', 'amf', 'qsv', or 'cpu'
+ * @param {string} encoder - 'auto', 'nvenc', 'amf', 'qsv', 'x264', or 'x265'
  * @returns {Promise<Object>} - { name, codec, getOutputOptions }
  */
 async function getEncoderConfig(encoder = 'auto') {
@@ -210,18 +224,20 @@ async function getEncoderConfig(encoder = 'auto') {
 
     if (encoder === 'nvenc' && !available.nvenc) {
         console.log('⚠️ NVENC not available, falling back...');
-        encoder = available.amf ? 'amf' : (available.qsv ? 'qsv' : 'cpu');
+        encoder = available.amf ? 'amf' : (available.qsv ? 'qsv' : 'x264');
     }
 
     if (encoder === 'amf' && !available.amf) {
         console.log('⚠️ AMD AMF not available, falling back...');
-        encoder = available.qsv ? 'qsv' : 'cpu';
+        encoder = available.qsv ? 'qsv' : 'x264';
     }
 
     if (encoder === 'qsv' && !available.qsv) {
-        console.log('⚠️ QuickSync not available, falling back to CPU...');
-        encoder = 'cpu';
+        console.log('⚠️ QuickSync not available, falling back to x264...');
+        encoder = 'x264';
     }
+
+    // x265 is always available (CPU-based)
 
     return {
         type: encoder,

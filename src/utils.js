@@ -12,14 +12,15 @@ const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm
  * @param {string} filePath - File path to normalize
  * @returns {string} - Normalized file path with consistent extension
  */
-function normalizeOutputExtension(filePath) {
+function normalizeOutputExtension(filePath, imageFormat = 'webp') {
     const ext = path.extname(filePath).toLowerCase();
     const dir = path.dirname(filePath);
     const baseName = path.basename(filePath, path.extname(filePath));
 
-    // Normalize image extensions to .jpeg
+    // Normalize image extensions to target format
     if (IMAGE_EXTENSIONS.includes(ext)) {
-        return path.join(dir, `${baseName}.jpeg`);
+        const targetExt = imageFormat.startsWith('.') ? imageFormat : `.${imageFormat}`;
+        return path.join(dir, `${baseName}${targetExt}`);
     }
 
     // Normalize video extensions to .mp4

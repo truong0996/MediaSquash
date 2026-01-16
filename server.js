@@ -102,7 +102,7 @@ app.post('/api/scan', (req, res) => {
 
 // Start compression
 app.post('/api/compress', async (req, res) => {
-    const { files, outputFolder, inputFolder, encoder, quality, crf, flatten, renameOnly, categoryByYear } = req.body;
+    const { files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear } = req.body;
 
     if (compressionState.isRunning) {
         return res.status(400).json({ error: 'Compression already in progress' });
@@ -138,10 +138,10 @@ app.post('/api/compress', async (req, res) => {
     res.json({ status: 'started', total: files.length });
 
     // Process files
-    processFiles(files, outputFolder, inputFolder, encoder, parseInt(quality), parseInt(crf), flatten, renameOnly, categoryByYear);
+    processFiles(files, outputFolder, inputFolder, encoder, imageFormat, parseInt(quality), parseInt(crf), flatten, renameOnly, categoryByYear);
 });
 
-async function processFiles(files, outputFolder, inputFolder, encoder, quality, crf, flatten, renameOnly, categoryByYear) {
+async function processFiles(files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear) {
     // Dynamic concurrency based on CPU cores
     const os = require('os');
     const cpuCount = os.cpus().length;
@@ -181,23 +181,18 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
         // Generate new filename based on date
         const ext = path.extname(file.path);
         const extLower = ext.toLowerCase();
-        // Normalize all outputs: images → .jpeg, videos → .mp4
-        // This ensures consistent format (iPhone HEIC → JPEG, MOV → MP4, etc.)
-        let outputExt;
-        if (IMAGE_EXTENSIONS.includes(extLower)) {
-            outputExt = '.jpeg';  // All images to JPEG for consistency
-        } else if (VIDEO_EXTENSIONS.includes(extLower)) {
-            outputExt = '.mp4';   // All videos to MP4 for consistency
-        } else {
-            outputExt = ext;      // Keep original for unknown types
-        }
+
+        // Use normalizeOutputExtension to determine output format
+        let tempOutputPath = normalizeOutputExtension(file.path, imageFormat);
+        let outputExt = path.extname(tempOutputPath);
+
         let newFilename;
         if (captureDate) {
             const baseName = formatDateForFilename(captureDate);
             newFilename = baseName + outputExt;
             yearFolder = captureDate.getFullYear().toString();
         } else {
-            // No date available, keep original name but still convert MOV to MP4
+            // No date available, keep original name but still apply normalization
             const originalName = path.basename(file.path, ext);
             newFilename = originalName + outputExt;
             yearFolder = 'other';

@@ -48,7 +48,7 @@ async function compressVideo(inputPath, outputPath, options = {}) {
     return new Promise((resolve, reject) => {
         // Get encoder-specific output options
         let outputOptions;
-        if (encoderConfig.type === 'cpu') {
+        if (encoderConfig.type === 'x264' || encoderConfig.type === 'x265') {
             outputOptions = encoderConfig.getOutputOptions(settings.crf, settings.preset, threads);
         } else {
             outputOptions = encoderConfig.getOutputOptions(settings.crf);

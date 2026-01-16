@@ -91,20 +91,50 @@
             </div>
         </div>
 
-        <!-- Settings Section -->
+        <!-- Image Settings Section -->
         <div class="section settings-section">
             <h3 class="section-title">
-                <span class="icon">⚙️</span> Settings
+                <span class="icon">🖼️</span> Image Settings
             </h3>
             <div class="settings-grid">
                 <div class="setting-group">
-                    <label class="setting-label">Video Encoder</label>
+                    <label class="setting-label">Format</label>
                     <div class="encoder-options">
                         <label class="radio-label">
-                            <input type="radio" name="encoder" value="auto" checked>
+                            <input type="radio" name="image-format" value="jpeg">
                             <span class="radio-mark"></span>
-                            Auto
+                            JPEG
                         </label>
+                        <label class="radio-label">
+                            <input type="radio" name="image-format" value="webp" checked>
+                            <span class="radio-mark"></span>
+                            WebP
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="image-format" value="avif">
+                            <span class="radio-mark"></span>
+                            AVIF
+                        </label>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label">Quality <span class="setting-value"
+                            id="quality-value">88</span></label>
+                    <input type="range" id="quality-slider" class="slider" min="1" max="100" value="88">
+                    <span class="slider-hint">Higher = Better quality, larger file</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Video Settings Section -->
+        <div class="section settings-section">
+            <h3 class="section-title">
+                <span class="icon">🎬</span> Video Settings
+            </h3>
+            <div class="settings-grid">
+                <div class="setting-group">
+                    <label class="setting-label">Encoder</label>
+                    <div class="encoder-options">
                         <label class="radio-label" id="encoder-nvenc-label">
                             <input type="radio" name="encoder" value="nvenc">
                             <span class="radio-mark"></span>
@@ -124,19 +154,20 @@
                             <span class="encoder-badge" id="qsv-badge">N/A</span>
                         </label>
                         <label class="radio-label">
-                            <input type="radio" name="encoder" value="cpu">
+                            <input type="radio" name="encoder" value="x264">
                             <span class="radio-mark"></span>
-                            CPU
+                            x264
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="encoder" value="x265">
+                            <span class="radio-mark"></span>
+                            x265
+                            <span class="encoder-badge available">HEVC</span>
                         </label>
                     </div>
                 </div>
                 <div class="setting-group">
-                    <label class="setting-label">Image Quality <span class="setting-value"
-                            id="quality-value">88</span></label>
-                    <input type="range" id="quality-slider" class="slider" min="1" max="100" value="88">
-                </div>
-                <div class="setting-group">
-                    <label class="setting-label">Video Quality (CRF) <span class="setting-value"
+                    <label class="setting-label">Quality (CRF) <span class="setting-value"
                             id="crf-value">22</span></label>
                     <input type="range" id="crf-slider" class="slider" min="0" max="51" value="22">
                     <span class="slider-hint">Lower = Better quality, larger file</span>

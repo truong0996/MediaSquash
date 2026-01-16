@@ -39,8 +39,9 @@ process.on('SIGINT', () => {
 });
 
 async function getFinalOutputPath(inputPath, options, defaultOutputPath) {
-    // Always normalize the output extension for consistency (.jpeg for images, .mp4 for videos)
-    const normalizedPath = normalizeOutputExtension(defaultOutputPath);
+    // Use the target image format if provided
+    const imageFormat = options.imageFormat || 'webp';
+    const normalizedPath = normalizeOutputExtension(defaultOutputPath, imageFormat);
 
     if (!options.rename) return normalizedPath;
 
@@ -144,7 +145,8 @@ async function processDirectory(inputDir, options, type = 'all') {
                 return await getFinalOutputPath(filePath, options, baseOutputPath);
             } else {
                 // Normalize extension for consistent format (.jpeg for images, .mp4 for videos)
-                const normalizedPath = normalizeOutputExtension(baseOutputPath);
+                const imageFormat = options.imageFormat || 'webp';
+                const normalizedPath = normalizeOutputExtension(baseOutputPath, imageFormat);
 
                 // Handle name collisions in Flatten mode without renaming by date
                 let finalPath = normalizedPath;
@@ -337,6 +339,7 @@ program
     .description('Compress an image file OR directory of images (supports: jpg, png, webp, avif, tiff, gif, heic)')
     .option('-o, --output <path>', 'Output file path or directory')
     .option('-q, --quality <number>', 'Quality level (1-100, default: 88)', '88')
+    .option('--image-format <format>', 'Target image format: jpeg, webp, avif (default: webp)', 'webp')
     .option('--rename', 'Rename file based on capture date (yyyymmdd-hhmmss)', false)
     .option('--rename-only', 'Rename and copy files without compressing', false) // ADDED
     .option('-r, --recursive', 'Search directories recursively (if input is directory)', false)
@@ -405,7 +408,7 @@ program
     .option('-o, --output <path>', 'Output file path or directory')
     .option('-c, --crf <number>', 'CRF value (0-51, lower = better quality, default: 22)', '22')
     .option('-p, --preset <preset>', 'Encoding preset for CPU (ultrafast, fast, medium, slow, veryslow)', 'medium')
-    .option('-e, --encoder <encoder>', 'Video encoder: auto, nvenc, qsv, cpu (default: auto)', 'auto')
+    .option('-e, --encoder <encoder>', 'Video encoder: auto, nvenc, qsv, x264, x265 (default: auto)', 'auto')
     .option('--rename', 'Rename file based on capture date (yyyymmdd-hhmmss)', false)
     .option('--rename-only', 'Rename and copy files without compressing', false)
     .option('-r, --recursive', 'Search directories recursively (if input is directory)', false)
@@ -487,8 +490,9 @@ program
     .description('Compress all images and videos in a directory')
     .option('-o, --output <dir>', 'Output directory')
     .option('-q, --quality <number>', 'Image quality (1-100, default: 88)', '88')
+    .option('--image-format <format>', 'Target image format: jpeg, webp, avif (default: webp)', 'webp')
     .option('-c, --crf <number>', 'Video CRF (0-51, default: 22)', '22')
-    .option('-e, --encoder <encoder>', 'Video encoder: auto, nvenc, qsv, cpu (default: auto)', 'auto')
+    .option('-e, --encoder <encoder>', 'Video encoder: auto, nvenc, qsv, x264, x265 (default: auto)', 'auto')
     .option('-j, --jobs <number>', `Parallel jobs for images (default: auto)`)
     .option('-r, --recursive', 'Search directories recursively', false)
     .option('--flatten', 'Put all files directly in output folder (no subfolders)', false)

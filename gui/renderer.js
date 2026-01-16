@@ -120,6 +120,17 @@ async function detectEncoders() {
             document.querySelector('input[value="qsv"]').disabled = true;
             $('encoder-qsv-label').style.opacity = '0.5';
         }
+
+        // Auto-select the best available encoder
+        let bestEncoder = 'x264'; // Default fallback
+        if (availableEncoders.nvenc) bestEncoder = 'nvenc';
+        else if (availableEncoders.amf) bestEncoder = 'amf';
+        else if (availableEncoders.qsv) bestEncoder = 'qsv';
+
+        const radioToSelect = document.querySelector(`input[value="${bestEncoder}"]`);
+        if (radioToSelect) {
+            radioToSelect.checked = true;
+        }
     } catch (error) {
         console.error('Failed to detect encoders:', error);
     }
@@ -297,6 +308,7 @@ async function startCompression() {
                 outputFolder: $('output-folder').value,
                 inputFolder: $('input-folder').value,
                 encoder: encoder,
+                imageFormat: document.querySelector('input[name="image-format"]:checked').value,
                 quality: $('quality-slider').value,
                 crf: $('crf-slider').value,
                 flatten: $('flatten-output').checked,
