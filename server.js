@@ -10,7 +10,7 @@ const fs = require('fs');
 // Import compression modules
 const { compressImage } = require('./src/imageCompressor');
 const { compressVideo, detectAvailableEncoders } = require('./src/videoCompressor');
-const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename } = require('./src/utils');
+const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename, normalizeOutputExtension, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } = require('./src/utils');
 
 const app = express();
 const PORT = 3847; // Random port to avoid conflicts
@@ -147,11 +147,19 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
     const cpuCount = os.cpus().length;
 
     // Images: Use most cores (they're fast, low memory)
-    // Videos: Use fewer (they use GPU and more memory)
     const IMAGE_CONCURRENCY = Math.max(4, Math.min(cpuCount, 12));  // 4-12 based on cores
-    const VIDEO_CONCURRENCY = Math.max(1, Math.min(Math.floor(cpuCount / 4), 4)); // 1-4 based on cores
+
+    // Videos: Using GPU encoding (NVENC/QSV), so GPU does the heavy lifting
+    // More workers = better throughput since CPU mainly decodes/feeds data
+    // Scale based on CPU: small CPUs (8 threads) = 3-4 workers, large CPUs (16+ threads) = 6 workers
+    const VIDEO_CONCURRENCY = Math.max(2, Math.min(6, Math.floor(cpuCount / 2)));
+
+    // Threads for decoding/preprocessing (GPU handles encoding)
+    // Each worker gets a fair share of CPU for decoding
+    const THREADS_PER_VIDEO = Math.max(2, Math.floor(cpuCount / VIDEO_CONCURRENCY));
 
     console.log(`⚡ Dynamic concurrency: ${IMAGE_CONCURRENCY} images, ${VIDEO_CONCURRENCY} videos (${cpuCount} CPU cores detected)`);
+    console.log(`   Video threads per worker: ${THREADS_PER_VIDEO} (GPU encoding, threads for decoding)`);
 
     // Helper to process a single file
     async function processSingleFile(file, index) {
@@ -173,11 +181,16 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
         // Generate new filename based on date
         const ext = path.extname(file.path);
         const extLower = ext.toLowerCase();
-        // Convert MOV to MP4 for better compatibility (iPhone HEVC videos)
-        const isMovFile = file.type === 'video' && extLower === '.mov';
-        // Convert HEIC/HEIF to PNG for better compatibility (iPhone HEIC images)
-        const isHeicFile = file.type === 'image' && (extLower === '.heic' || extLower === '.heif');
-        const outputExt = isMovFile ? '.mp4' : (isHeicFile ? '.png' : ext);
+        // Normalize all outputs: images → .jpeg, videos → .mp4
+        // This ensures consistent format (iPhone HEIC → JPEG, MOV → MP4, etc.)
+        let outputExt;
+        if (IMAGE_EXTENSIONS.includes(extLower)) {
+            outputExt = '.jpeg';  // All images to JPEG for consistency
+        } else if (VIDEO_EXTENSIONS.includes(extLower)) {
+            outputExt = '.mp4';   // All videos to MP4 for consistency
+        } else {
+            outputExt = ext;      // Keep original for unknown types
+        }
         let newFilename;
         if (captureDate) {
             const baseName = formatDateForFilename(captureDate);
@@ -229,19 +242,28 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
             const originalSize = fs.statSync(file.path).size;
 
             if (renameOnly) {
-                fs.copyFileSync(file.path, outputPath);
-                setFileMetadata(file.path, outputPath);
-                result = {
-                    originalSize: originalSize,
-                    compressedSize: originalSize,
-                    savings: 'Renamed only'
-                };
+                // HEIC/HEIF files must be converted even in renameOnly mode
+                // because HEIC binary can't be opened as JPEG
+                if (extLower === '.heic' || extLower === '.heif') {
+                    result = await compressImage(file.path, outputPath, { quality });
+                    result.savings = 'Converted from HEIC';
+                } else {
+                    // Other formats: just copy with new extension
+                    fs.copyFileSync(file.path, outputPath);
+                    setFileMetadata(file.path, outputPath);
+                    result = {
+                        originalSize: originalSize,
+                        compressedSize: originalSize,
+                        savings: 'Renamed only'
+                    };
+                }
             } else if (file.type === 'image') {
                 result = await compressImage(file.path, outputPath, { quality });
             } else {
                 result = await compressVideo(file.path, outputPath, {
                     encoder: encoder,
                     crf: crf,
+                    threads: THREADS_PER_VIDEO,  // Use calculated optimal threads
                     onProgress: (progress) => {
                         sendSSE('file-progress', { index, percent: progress.percent || 0 });
                     }
@@ -269,9 +291,9 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
             console.error(`   Output: ${outputPath}`);
             console.error(`   Error: ${errorMsg}`);
 
-            // For MOV files being converted to MP4, don't copy original (incompatible codec)
+            // For video files being converted, don't copy original (incompatible codec)
             // Also clean up any partial output file that FFmpeg may have created
-            if (isMovFile) {
+            if (file.type === 'video') {
                 try {
                     if (fs.existsSync(outputPath)) {
                         fs.unlinkSync(outputPath);
@@ -279,7 +301,7 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
                     }
                 } catch { }
             } else {
-                // For other files, try to copy original as fallback
+                // For image files, try to copy original as fallback
                 try {
                     fs.copyFileSync(file.path, outputPath);
                     setFileMetadata(file.path, outputPath);
@@ -290,40 +312,61 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
         }
     }
 
-    // Helper to process batch with concurrency limit
-    async function processBatch(items, concurrency) {
+    // Worker pool pattern: each slot immediately picks up the next item when done
+    // This avoids the issue where fast items wait for slow items in the same batch
+    async function processWithWorkerPool(items, concurrency) {
         const results = [];
-        for (let i = 0; i < items.length; i += concurrency) {
-            if (compressionState.shouldCancel) break;
+        const executing = new Set();
 
-            const batch = items.slice(i, i + concurrency);
-            const batchResults = await Promise.all(
-                batch.map(item => processSingleFile(item.file, item.index))
-            );
+        // Helper to process one item and update progress
+        async function processItem(item) {
+            const res = await processSingleFile(item.file, item.index);
 
-            // Update progress after each batch
-            for (const res of batchResults) {
-                if (res) {
-                    compressionState.processed++;
-                    if (res.success) {
-                        compressionState.results.success++;
-                        compressionState.results.totalOriginal += res.result.originalSize;
-                        compressionState.results.totalCompressed += res.result.compressedSize;
-                    } else {
-                        compressionState.results.failed++;
-                    }
+            // Update progress immediately when each item completes
+            if (res) {
+                compressionState.processed++;
+                if (res.success) {
+                    compressionState.results.success++;
+                    compressionState.results.totalOriginal += res.result.originalSize;
+                    compressionState.results.totalCompressed += res.result.compressedSize;
+                } else {
+                    compressionState.results.failed++;
                 }
+
+                sendSSE('overall-progress', {
+                    processed: compressionState.processed,
+                    total: compressionState.total,
+                    percent: (compressionState.processed / compressionState.total) * 100
+                });
             }
 
-            sendSSE('overall-progress', {
-                processed: compressionState.processed,
-                total: compressionState.total,
-                percent: (compressionState.processed / compressionState.total) * 100
+            return res;
+        }
+
+        for (const item of items) {
+            if (compressionState.shouldCancel) break;
+
+            // Create promise for this item
+            const promise = processItem(item).then(result => {
+                executing.delete(promise);
+                return result;
+            }).catch(error => {
+                executing.delete(promise);
+                return { success: false, error };
             });
 
-            results.push(...batchResults);
+            results.push(promise);
+            executing.add(promise);
+
+            // If we've reached max concurrency, wait for ANY one to complete
+            // This is the key difference from batch processing!
+            if (executing.size >= concurrency) {
+                await Promise.race(executing);
+            }
         }
-        return results;
+
+        // Wait for all remaining items to complete
+        return Promise.all(results);
     }
 
     // Separate images and videos with their original indices
@@ -339,11 +382,11 @@ async function processFiles(files, outputFolder, inputFolder, encoder, quality, 
 
     console.log(`Processing ${images.length} images (${IMAGE_CONCURRENCY} concurrent) and ${videos.length} videos (${VIDEO_CONCURRENCY} concurrent)`);
 
-    // Process images first (faster, more parallelizable)
-    await processBatch(images, IMAGE_CONCURRENCY);
+    // Process images first (faster, more parallelizable) using worker pool
+    await processWithWorkerPool(images, IMAGE_CONCURRENCY);
 
-    // Then process videos
-    await processBatch(videos, VIDEO_CONCURRENCY);
+    // Then process videos using worker pool
+    await processWithWorkerPool(videos, VIDEO_CONCURRENCY);
 
     // Done
     compressionState.results.endTime = Date.now();

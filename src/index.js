@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const { compressImage } = require('./imageCompressor');
 const { compressVideo } = require('./videoCompressor');
-const { isImage, isVideo, generateOutputPath, formatFileSize, getCompressionRatio, getOptimalConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata } = require('./utils');
+const { isImage, isVideo, generateOutputPath, normalizeOutputExtension, formatFileSize, getCompressionRatio, getOptimalConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata } = require('./utils');
 
 // Package info
 const packageJson = require('../package.json');
@@ -39,15 +39,18 @@ process.on('SIGINT', () => {
 });
 
 async function getFinalOutputPath(inputPath, options, defaultOutputPath) {
-    if (!options.rename) return defaultOutputPath;
+    // Always normalize the output extension for consistency (.jpeg for images, .mp4 for videos)
+    const normalizedPath = normalizeOutputExtension(defaultOutputPath);
+
+    if (!options.rename) return normalizedPath;
 
     // If rename is on, we recalculate the filename part
     const date = await getCaptureDate(inputPath);
-    if (!date) return defaultOutputPath;
+    if (!date) return normalizedPath;
 
     const newName = formatDateForFilename(date);
-    const ext = path.extname(inputPath);
-    const dir = path.dirname(defaultOutputPath); // Use the directory determined by the caller
+    const ext = path.extname(normalizedPath); // Use normalized extension
+    const dir = path.dirname(normalizedPath); // Use the directory determined by the caller
 
     let finalPath = path.join(dir, `${newName}${ext}`);
     let counter = 1;
@@ -140,12 +143,15 @@ async function processDirectory(inputDir, options, type = 'all') {
             if (options.rename) {
                 return await getFinalOutputPath(filePath, options, baseOutputPath);
             } else {
+                // Normalize extension for consistent format (.jpeg for images, .mp4 for videos)
+                const normalizedPath = normalizeOutputExtension(baseOutputPath);
+
                 // Handle name collisions in Flatten mode without renaming by date
-                let finalPath = baseOutputPath;
+                let finalPath = normalizedPath;
                 let counter = 1;
-                const ext = path.extname(baseOutputPath);
-                const name = path.basename(baseOutputPath, ext);
-                const dir = path.dirname(baseOutputPath);
+                const ext = path.extname(normalizedPath);
+                const name = path.basename(normalizedPath, ext);
+                const dir = path.dirname(normalizedPath);
 
                 while (fs.existsSync(finalPath)) {
                     finalPath = path.join(dir, `${name}(${counter})${ext}`);
@@ -188,6 +194,22 @@ async function processDirectory(inputDir, options, type = 'all') {
                         const currentOutputPath = await determineTargetFile(filePath);
 
                         if (options.renameOnly) {
+                            const ext = path.extname(filePath).toLowerCase();
+
+                            // HEIC/HEIF files must be converted even in renameOnly mode
+                            if (ext === '.heic' || ext === '.heif') {
+                                const result = await compressImage(filePath, currentOutputPath, {
+                                    quality: parseInt(options.quality, 10)
+                                });
+                                setFileMetadata(filePath, currentOutputPath);
+                                totalOriginal += result.originalSize;
+                                totalCompressed += result.compressedSize;
+                                successCount++;
+                                console.log(chalk.green(`   ✓ ${path.basename(currentOutputPath)}: Converted from HEIC`));
+                                return result;
+                            }
+
+                            // Other formats: just copy with new extension
                             fs.copyFileSync(filePath, currentOutputPath);
                             setFileMetadata(filePath, currentOutputPath);
                             const size = fs.statSync(filePath).size;

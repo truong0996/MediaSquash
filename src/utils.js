@@ -7,6 +7,31 @@ const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.tiff', '.
 const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.3gp', '.m4v', '.mpeg', '.mpg'];
 
 /**
+ * Normalize output file extension for consistent format
+ * Images → .jpeg, Videos → .mp4
+ * @param {string} filePath - File path to normalize
+ * @returns {string} - Normalized file path with consistent extension
+ */
+function normalizeOutputExtension(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    const dir = path.dirname(filePath);
+    const baseName = path.basename(filePath, path.extname(filePath));
+
+    // Normalize image extensions to .jpeg
+    if (IMAGE_EXTENSIONS.includes(ext)) {
+        return path.join(dir, `${baseName}.jpeg`);
+    }
+
+    // Normalize video extensions to .mp4
+    if (VIDEO_EXTENSIONS.includes(ext)) {
+        return path.join(dir, `${baseName}.mp4`);
+    }
+
+    // Return as-is for other files
+    return filePath;
+}
+
+/**
  * Get optimal concurrency based on CPU cores
  * Uses half the cores to keep system responsive
  * @returns {number}
@@ -391,6 +416,7 @@ module.exports = {
     getCompressionRatio,
     ensureDirectoryExists,
     generateOutputPath,
+    normalizeOutputExtension,
     getOptimalConcurrency,
     getOptimalThreads,
     parallelProcess,
