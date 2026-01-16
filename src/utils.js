@@ -8,7 +8,7 @@ const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm
 
 /**
  * Normalize output file extension for consistent format
- * Images → .jpeg, Videos → .mp4
+ * Images → .webp (default), .jpeg, or .avif | Videos → .mp4
  * @param {string} filePath - File path to normalize
  * @returns {string} - Normalized file path with consistent extension
  */

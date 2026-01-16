@@ -10,12 +10,12 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 // Default compression settings
 const DEFAULT_SETTINGS = {
-    encoder: 'auto', // 'auto', 'nvenc', 'qsv', or 'cpu'
+    encoder: 'auto', // 'auto', 'nvenc', 'amf', 'qsv', 'x264', or 'x265'
     crf: 22,
-    preset: 'veryfast', // For CPU encoder
+    preset: 'medium', // For x264/x265 software encoders
     audioCodec: 'aac',
     audioBitrate: '128k',
-    threads: 0, // 0 = auto (for CPU encoder)
+    threads: 0, // 0 = auto (for x264/x265 software encoders)
     videoJobs: 2 // Number of videos to process in parallel
 };
 
@@ -42,7 +42,7 @@ async function compressVideo(inputPath, outputPath, options = {}) {
     // Get encoder configuration (handles auto-detection and fallback)
     const encoderConfig = await getEncoderConfig(settings.encoder);
 
-    // Calculate optimal threads for CPU encoder
+    // Calculate optimal threads for software encoders (x264/x265)
     const threads = settings.threads || getOptimalThreads();
 
     return new Promise((resolve, reject) => {

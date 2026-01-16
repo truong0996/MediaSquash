@@ -238,7 +238,7 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
 
             if (renameOnly) {
                 // HEIC/HEIF files must be converted even in renameOnly mode
-                // because HEIC binary can't be opened as JPEG
+                // because HEIC binary format must be decoded to the target format (WebP/JPEG/AVIF)
                 if (extLower === '.heic' || extLower === '.heif') {
                     result = await compressImage(file.path, outputPath, { quality });
                     result.savings = 'Converted from HEIC';

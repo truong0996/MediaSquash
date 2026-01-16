@@ -144,7 +144,7 @@ async function processDirectory(inputDir, options, type = 'all') {
             if (options.rename) {
                 return await getFinalOutputPath(filePath, options, baseOutputPath);
             } else {
-                // Normalize extension for consistent format (.jpeg for images, .mp4 for videos)
+                // Normalize extension for consistent format (WebP/JPEG/AVIF for images, .mp4 for videos)
                 const imageFormat = options.imageFormat || 'webp';
                 const normalizedPath = normalizeOutputExtension(baseOutputPath, imageFormat);
 
@@ -278,7 +278,7 @@ async function processDirectory(inputDir, options, type = 'all') {
                         let currentCmd = null;
                         const result = await compressVideo(filePath, currentOutputPath, {
                             crf: parseInt(options.crf, 10),
-                            preset: options.preset || 'veryfast',
+                            preset: options.preset || 'medium',
                             encoder: options.encoder || 'auto',
                             onStart: (cmd) => {
                                 currentCmd = cmd;
@@ -497,7 +497,7 @@ program
     .option('-r, --recursive', 'Search directories recursively', false)
     .option('--flatten', 'Put all files directly in output folder (no subfolders)', false)
     .option('--organize', 'Organize output into folders by date (YYYY-MM)', false)
-    .option('-p, --preset <preset>', 'Encoding preset for CPU (ultrafast, fast, medium, slow, veryslow)', 'veryfast')
+    .option('-p, --preset <preset>', 'Encoding preset for x264/x265 (ultrafast, fast, medium, slow, veryslow)', 'medium')
     .option('--rename', 'Rename files based on capture date (yyyymmdd-hhmmss)', false)
     .option('--rename-only', 'Rename and copy files without compressing', false)
     .action(async (inputDir, options) => {

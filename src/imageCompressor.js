@@ -17,16 +17,16 @@ const COMPRESSION_SETTINGS = {
 };
 
 /**
- * Convert HEIC/HEIF to compressed JPEG using heic-convert + Sharp
+ * Convert HEIC/HEIF to target format (WebP, JPEG, or AVIF) using heic-convert + Sharp
  * Falls back to Sharp if the file is not a valid HEIC (may be mislabeled)
  * @param {string} inputPath - Path to HEIC file
- * @param {string} outputPath - Path to output JPEG
+ * @param {string} outputPath - Path to output file
  * @param {Object} options - Compression options (quality, etc.)
  * @returns {Promise<{success: boolean, usedFallback: boolean}>}
  */
 async function convertHeicToJpeg(inputPath, outputPath, options = {}) {
     const inputBuffer = fs.readFileSync(inputPath);
-    const quality = options.quality || 75;
+    const quality = options.quality || 88;
 
     // Check magic bytes to verify file format
     // HEIC/HEIF files start with "ftyp" at byte 4-8
@@ -144,7 +144,7 @@ async function compressImage(inputPath, outputPath, options = {}) {
             case 'jpeg':
                 pipeline = pipeline.jpeg({
                     mozjpeg: settings.mozjpeg !== false,
-                    quality: settings.quality || 75
+                    quality: settings.quality || 88
                 });
                 break;
             case 'png':
@@ -155,18 +155,18 @@ async function compressImage(inputPath, outputPath, options = {}) {
                 break;
             case 'webp':
                 pipeline = pipeline.webp({
-                    quality: settings.quality || 75
+                    quality: settings.quality || 88
                 });
                 break;
             case 'avif':
                 pipeline = pipeline.avif({
-                    quality: settings.quality || 75
+                    quality: settings.quality || 88
                 });
                 break;
             case 'tiff':
                 pipeline = pipeline.tiff({
                     compression: settings.compression || 'lzw',
-                    quality: settings.quality || 75
+                    quality: settings.quality || 88
                 });
                 break;
             case 'gif':
@@ -177,7 +177,7 @@ async function compressImage(inputPath, outputPath, options = {}) {
             case 'heic':
             case 'heif':
                 pipeline = pipeline.heif({
-                    quality: settings.quality || 75,
+                    quality: settings.quality || 88,
                     compression: settings.compression || 'hevc'
                 });
                 break;
@@ -185,7 +185,7 @@ async function compressImage(inputPath, outputPath, options = {}) {
                 // For unsupported formats, try to convert to jpeg
                 pipeline = pipeline.jpeg({
                     mozjpeg: true,
-                    quality: settings.quality || 75
+                    quality: settings.quality || 88
                 });
         }
 
