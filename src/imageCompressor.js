@@ -5,15 +5,15 @@ const { ensureDirectoryExists, getFileSize, formatFileSize, getCompressionRatio,
 
 // Compression settings for different formats
 const COMPRESSION_SETTINGS = {
-    jpeg: { mozjpeg: true, quality: 75 },
-    jpg: { mozjpeg: true, quality: 75 },
+    jpeg: { mozjpeg: true, quality: 88 },
+    jpg: { mozjpeg: true, quality: 88 },
     png: { compressionLevel: 9, effort: 10 },
-    webp: { quality: 75 },
-    avif: { quality: 75 },
-    tiff: { compression: 'lzw', quality: 75 },
+    webp: { quality: 88 },
+    avif: { quality: 88 },
+    tiff: { compression: 'lzw', quality: 88 },
     gif: { effort: 10 },
-    heic: { quality: 75 },
-    heif: { quality: 75 }
+    heic: { quality: 88 },
+    heif: { quality: 88 }
 };
 
 /**

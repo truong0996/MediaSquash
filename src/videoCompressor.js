@@ -11,7 +11,7 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 // Default compression settings
 const DEFAULT_SETTINGS = {
     encoder: 'auto', // 'auto', 'nvenc', 'qsv', or 'cpu'
-    crf: 23,
+    crf: 22,
     preset: 'veryfast', // For CPU encoder
     audioCodec: 'aac',
     audioBitrate: '128k',
