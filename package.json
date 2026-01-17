@@ -2,13 +2,38 @@
     "name": "media-compressor",
     "version": "1.0.0",
     "description": "A powerful tool to compress images and videos with GPU acceleration and Web GUI",
-    "main": "src/index.js",
+    "main": "main.js",
     "bin": {
         "compress": "src/index.js"
     },
     "scripts": {
-        "start": "node src/index.js",
-        "gui": "node server.js"
+        "start": "electron .",
+        "server": "node server.js",
+        "gui": "node server.js",
+        "dist": "electron-builder",
+        "postinstall": "electron-builder install-app-deps"
+    },
+    "build": {
+        "appId": "com.mediasquash.app",
+        "productName": "MediaSquash",
+        "win": {
+            "target": "portable",
+            "icon": "gui/icon.png"
+        },
+        "nsis": {
+            "oneClick": false,
+            "perMachine": false,
+            "allowToChangeInstallationDirectory": true
+        },
+        "files": [
+            "**/*",
+            "!src/test/**"
+        ],
+        "asarUnpack": [
+            "**/node_modules/ffmpeg-static/**",
+            "**/node_modules/ffprobe-static/**",
+            "**/node_modules/sharp/**"
+        ]
     },
     "keywords": [
         "image",
@@ -38,5 +63,9 @@
         "heic-convert": "^2.1.0",
         "open": "^11.0.0",
         "sharp": "^0.33.2"
+    },
+    "devDependencies": {
+        "electron": "^28.0.0",
+        "electron-builder": "^26.4.0"
     }
 }

@@ -19,8 +19,8 @@ async function init() {
     if (titlebar) titlebar.style.display = 'none';
 
     // Folder selection - using text input for path
-    $('btn-input-browse').onclick = () => promptForPath('input');
-    $('btn-output-browse').onclick = () => promptForPath('output');
+    $('btn-input-browse').onclick = async () => await promptForPath('input');
+    $('btn-output-browse').onclick = async () => await promptForPath('output');
 
     // Scan button
     $('btn-scan').onclick = scanFolder;
@@ -137,14 +137,22 @@ async function detectEncoders() {
 }
 
 // ============ Folder Selection ============
-function promptForPath(type) {
-    const currentValue = type === 'input' ? $('input-folder').value : $('output-folder').value;
-    const newPath = prompt(
-        type === 'input'
-            ? 'Enter input folder path (e.g. D:\\Photos):'
-            : 'Enter output folder path:',
-        currentValue
-    );
+async function promptForPath(type) {
+    let newPath = null;
+
+    if (window.electronAPI) {
+        // Native dialog
+        newPath = await window.electronAPI.selectFolder();
+    } else {
+        // Browser fallback
+        const currentValue = type === 'input' ? $('input-folder').value : $('output-folder').value;
+        newPath = prompt(
+            type === 'input'
+                ? 'Enter input folder path (e.g. D:\\Photos):'
+                : 'Enter output folder path:',
+            currentValue
+        );
+    }
 
     if (newPath) {
         if (type === 'input') {

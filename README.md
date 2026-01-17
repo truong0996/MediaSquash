@@ -1,11 +1,12 @@
 # Media Compressor
 
-A powerful Node.js tool for compressing images and videos with **GPU acceleration** and a modern **Web GUI**. Features automatic hardware encoder detection, smart file renaming, and parallel processing optimized for your system.
+A powerful Node.js tool for compressing images and videos with **GPU acceleration**. Available as a standalone **Electron Desktop App** or a **Web GUI**. Features automatic hardware encoder detection, smart file renaming, and parallel processing optimized for your system.
 
 ## ✨ Key Features
 
+- **🖥️ Desktop App**: Standalone Electron application with native file dialogs
 - **🎮 GPU Acceleration**: NVIDIA NVENC, AMD AMF, Intel QuickSync support
-- **🖥️ Web GUI**: Modern dark-themed interface with separate Image/Video settings
+- **🌐 Web GUI**: Modern dark-themed interface accessible via browser
 - **⚡ Parallel Processing**: Smart concurrency tuned for images and videos
 - **📁 Modern Formats**: Support for **WebP (default)** and **AVIF** for images, **H.265 (HEVC)** for videos
 - **📅 Smart Renaming**: Rename files by capture date (EXIF/metadata)
@@ -25,21 +26,51 @@ A powerful Node.js tool for compressing images and videos with **GPU acceleratio
 
 > Smart detection automatically enables the best encoder for your hardware!
 
+## 📦 Prerequisites
+
+- **Node.js 18+** (required for Electron 28)
+- **Windows 10/11** (for Desktop App builds)
+
 ## 📦 Installation
 
 ```bash
 npm install
 ```
 
-## 🖥️ Web GUI (Recommended)
+> FFmpeg and Sharp are bundled automatically - no manual installation required.
 
-Launch the modern web interface:
+## 🚀 Usage
+
+You can use Media Compressor either as a robust desktop application or via a web browser.
+
+### Option 1: Desktop App (Recommended)
+
+Run as a standalone native application with full system integration (files, GPU).
+
+**Development:**
+```bash
+npm start
+```
+
+**Build for Windows:**
+```bash
+npm run dist
+```
+The executable will be in the `dist/win-unpacked` folder.
+
+### Option 2: Web Interface
+
+Run as a local web server and access it via your favorite browser.
 
 ```bash
 npm run gui
 ```
+Open `http://localhost:3847` in your browser.
 
-This opens a browser at `http://localhost:3847` with:
+> **Note**: Some desktop features like the native **Browse** dialog are exclusive to the Desktop App. In Web Interface mode, you will need to manually paste folder paths.
+
+## 🎛️ Interface Features
+
 - **Separated Settings**: Clear distinction between Image and Video settings
 - **Smart Detection**: Automatically analyzes your hardware and selects the best encoder on startup
 - **Format Toggle**: Choose between JPEG, WebP (default), or AVIF for images

@@ -211,8 +211,12 @@ const exifReader = require('exif-reader');
 const ffmpeg = require('fluent-ffmpeg');
 const ffprobe = require('ffprobe-static');
 
-// Set ffprobe path once
-ffmpeg.setFfprobePath(ffprobe.path);
+// Set ffprobe path once (with Electron fix)
+let ffprobePath = ffprobe.path;
+if (ffprobePath && ffprobePath.includes('app.asar')) {
+    ffprobePath = ffprobePath.replace('app.asar', 'app.asar.unpacked');
+}
+ffmpeg.setFfprobePath(ffprobePath);
 
 // Helper to find Google Takeout JSON sidecar with fuzzy matching
 function findJsonSidecar(filePath) {
@@ -407,6 +411,45 @@ function setFileMetadata(sourcePath, targetPath) {
     }
 }
 
+/**
+ * Get corrected FFmpeg path for Electron environment
+ * @returns {string}
+ */
+function getFFmpegPath() {
+    let ffmpegPath;
+    try {
+        ffmpegPath = require('ffmpeg-static');
+    } catch {
+        ffmpegPath = 'ffmpeg';
+    }
+
+    if (ffmpegPath && ffmpegPath.includes('app.asar')) {
+        ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+    }
+
+    return ffmpegPath;
+}
+
+/**
+ * Get corrected FFprobe path for Electron environment
+ * @returns {string}
+ */
+function getFFprobePath() {
+    let ffprobePath;
+    try {
+        const ffprobe = require('ffprobe-static');
+        ffprobePath = ffprobe.path;
+    } catch {
+        ffprobePath = 'ffprobe';
+    }
+
+    if (ffprobePath && ffprobePath.includes('app.asar')) {
+        ffprobePath = ffprobePath.replace('app.asar', 'app.asar.unpacked');
+    }
+
+    return ffprobePath;
+}
+
 module.exports = {
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -425,5 +468,7 @@ module.exports = {
     getCaptureDate,
     formatDateForFilename,
     formatDateForFolder,
-    setFileMetadata
+    setFileMetadata,
+    getFFmpegPath,
+    getFFprobePath
 };

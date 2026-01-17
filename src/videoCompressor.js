@@ -1,12 +1,11 @@
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
 const path = require('path');
 const fs = require('fs');
-const { ensureDirectoryExists, getFileSize, formatFileSize, getCompressionRatio, getOptimalThreads, setFileMetadata } = require('./utils');
+const { ensureDirectoryExists, getFileSize, formatFileSize, getCompressionRatio, getOptimalThreads, setFileMetadata, getFFmpegPath } = require('./utils');
 const { getEncoderConfig, detectAvailableEncoders } = require('./hwEncoder');
 
 // Set ffmpeg path
-ffmpeg.setFfmpegPath(ffmpegPath);
+ffmpeg.setFfmpegPath(getFFmpegPath());
 
 // Default compression settings
 const DEFAULT_SETTINGS = {

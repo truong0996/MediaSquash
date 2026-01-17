@@ -10,14 +10,10 @@
 
 const { exec } = require('child_process');
 const path = require('path');
+const { getFFmpegPath: resolveFFmpegPath } = require('./utils');
 
 // Try to use system FFmpeg first, fallback to ffmpeg-static
-let ffmpegPath;
-try {
-    ffmpegPath = require('ffmpeg-static');
-} catch {
-    ffmpegPath = 'ffmpeg'; // Use system PATH
-}
+let ffmpegPath = resolveFFmpegPath();
 
 // Encoder configurations optimized for quality/speed balance
 const ENCODER_CONFIGS = {

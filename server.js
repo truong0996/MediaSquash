@@ -424,16 +424,33 @@ app.get('/api/events', (req, res) => {
 });
 
 // ============ Start Server ============
-app.listen(PORT, async () => {
-    console.log(`\n🗜️  Media Compressor GUI`);
-    console.log(`   Server running at: http://localhost:${PORT}`);
-    console.log(`   Press Ctrl+C to stop\n`);
+const startServer = async () => {
+    return new Promise((resolve) => {
+        const server = app.listen(PORT, async () => {
+            console.log(`\n🗜️  Media Compressor GUI`);
+            console.log(`   Server running at: http://localhost:${PORT}`);
 
-    // Auto-open browser
-    try {
-        const open = (await import('open')).default;
-        await open(`http://localhost:${PORT}`);
-    } catch (err) {
-        console.log(`   Open http://localhost:${PORT} in your browser`);
-    }
-});
+            if (process.env.ELECTRON_APP) {
+                console.log('   Running in Electron mode');
+            } else {
+                console.log(`   Press Ctrl+C to stop\n`);
+                // Auto-open browser only if NOT in Electron
+                try {
+                    const open = (await import('open')).default;
+                    await open(`http://localhost:${PORT}`);
+                } catch (err) {
+                    console.log(`   Open http://localhost:${PORT} in your browser`);
+                }
+            }
+            resolve(server);
+        });
+    });
+};
+
+// Start immediately if run directly
+if (require.main === module) {
+    startServer();
+} else {
+    // Export for Electron
+    module.exports = startServer();
+}
