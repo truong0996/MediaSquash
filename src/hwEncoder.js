@@ -185,7 +185,8 @@ async function detectAvailableEncoders(forceRecheck = false) {
         console.log('  ✗ Intel QuickSync: Not available');
     }
 
-    console.log('  ✓ Software x264: Always available\n');
+    console.log('  ✓ Software x264: Always available');
+    console.log('  ✓ Software x265 (HEVC): Always available\n');
 
     encoderCache = results;
     return results;
