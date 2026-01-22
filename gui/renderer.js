@@ -14,9 +14,9 @@ const $ = (id) => document.getElementById(id);
 async function init() {
     console.log('Initializing GUI...');
 
-    // Hide custom titlebar (not needed in browser)
-    const titlebar = document.querySelector('.titlebar');
-    if (titlebar) titlebar.style.display = 'none';
+    // Titlebar is now used for theme toggle, so we keep it visible
+    // const titlebar = document.querySelector('.titlebar');
+    // if (titlebar) titlebar.style.display = 'none';
 
     // Folder selection - using text input for path
     $('btn-input-browse').onclick = async () => await promptForPath('input');
@@ -41,6 +41,9 @@ async function init() {
 
     // Detect encoders
     await detectEncoders();
+
+    // Initialize Theme
+    initTheme();
 
     // Connect SSE for real-time updates
     connectSSE();
@@ -76,8 +79,8 @@ function connectSSE() {
     eventSource.addEventListener('overall-progress', (e) => {
         const data = JSON.parse(e.data);
         $('progress-bar').style.width = `${data.percent}%`;
-        $('progress-text').textContent = `${data.processed}/${data.total} files`;
-        $('progress-percent').textContent = `${data.percent.toFixed(0)}%`;
+        $('progress-text').textContent = `${data.percent.toFixed(0)}%`;
+        $('progress-count').textContent = `${data.processed}/${data.total}`;
     });
 
     eventSource.addEventListener('complete', (e) => {
@@ -90,7 +93,6 @@ function connectSSE() {
         finishCompression();
     });
 }
-
 // ============ Encoder Detection ============
 async function detectEncoders() {
     try {
@@ -98,28 +100,29 @@ async function detectEncoders() {
         availableEncoders = await response.json();
 
         // Update badges
-        $('nvenc-badge').textContent = availableEncoders.nvenc ? '✓' : '✗';
-        $('nvenc-badge').className = 'encoder-badge ' + (availableEncoders.nvenc ? 'available' : 'unavailable');
+        $('nvenc-badge').textContent = availableEncoders.nvenc ? 'GPU' : 'N/A';
+        $('nvenc-badge').className = 'badge ' + (availableEncoders.nvenc ? 'available' : 'unavailable');
 
-        $('amf-badge').textContent = availableEncoders.amf ? '✓' : '✗';
-        $('amf-badge').className = 'encoder-badge ' + (availableEncoders.amf ? 'available' : 'unavailable');
+        $('amf-badge').textContent = availableEncoders.amf ? 'GPU' : 'N/A';
+        $('amf-badge').className = 'badge ' + (availableEncoders.amf ? 'available' : 'unavailable');
 
-        $('qsv-badge').textContent = availableEncoders.qsv ? '✓' : '✗';
-        $('qsv-badge').className = 'encoder-badge ' + (availableEncoders.qsv ? 'available' : 'unavailable');
+        $('qsv-badge').textContent = availableEncoders.qsv ? 'iGPU' : 'N/A';
+        $('qsv-badge').className = 'badge ' + (availableEncoders.qsv ? 'available' : 'unavailable');
 
         // Disable unavailable encoder options
-        if (!availableEncoders.nvenc) {
-            document.querySelector('input[value="nvenc"]').disabled = true;
-            $('encoder-nvenc-label').style.opacity = '0.5';
-        }
-        if (!availableEncoders.amf) {
-            document.querySelector('input[value="amf"]').disabled = true;
-            $('encoder-amf-label').style.opacity = '0.5';
-        }
-        if (!availableEncoders.qsv) {
-            document.querySelector('input[value="qsv"]').disabled = true;
-            $('encoder-qsv-label').style.opacity = '0.5';
-        }
+        const disableOption = (id, inputVal, available) => {
+            const input = document.querySelector(`input[value="${inputVal}"]`);
+            const label = $(id);
+            if (input && label) {
+                input.disabled = !available;
+                label.style.opacity = available ? '1' : '0.5';
+                label.style.cursor = available ? 'pointer' : 'not-allowed';
+            }
+        };
+
+        disableOption('encoder-nvenc-label', 'nvenc', availableEncoders.nvenc);
+        disableOption('encoder-amf-label', 'amf', availableEncoders.amf);
+        disableOption('encoder-qsv-label', 'qsv', availableEncoders.qsv);
 
         // Auto-select the best available encoder
         let bestEncoder = 'x264'; // Default fallback
@@ -225,13 +228,17 @@ function renderFileList() {
     fileCount.textContent = `${files.length} files (${imageCount} images, ${videoCount} videos)`;
 
     fileList.innerHTML = files.map((file, index) => `
-        <div class="file-item" id="file-${index}">
-            <span class="file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
-            <div class="file-info">
-                <div class="file-name" title="${file.name}">${file.name}</div>
-                <div class="file-size">${file.sizeFormatted}</div>
+        <div class="file-row" id="file-${index}">
+            <div class="col-name">
+                <span class="file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
+                <span class="file-name-text" title="${file.name}">${file.name}</span>
             </div>
-            <span class="file-status status-${file.status}">${getStatusText(file.status)}</span>
+            <div class="col-size">${file.sizeFormatted}</div>
+            <div class="col-progress">
+                <div class="mini-progress-track">
+                    <div class="mini-progress-bar" style="width: 0%"></div>
+                </div>
+            </div>
         </div>
     `).join('');
 }
@@ -250,26 +257,30 @@ function updateFileStatus(index, status, extras = {}) {
     if (!files[index]) return;
 
     files[index].status = status;
-    const fileItem = document.getElementById(`file-${index}`);
-    if (!fileItem) return;
+    const fileRow = document.getElementById(`file-${index}`);
+    if (!fileRow) return;
 
-    const statusEl = fileItem.querySelector('.file-status');
-    statusEl.className = `file-status status-${status}`;
-    statusEl.textContent = getStatusText(status);
+    const progressBar = fileRow.querySelector('.mini-progress-bar');
+    const colProgress = fileRow.querySelector('.col-progress');
 
     if (status === 'processing') {
-        fileItem.classList.add('processing');
+        fileRow.classList.add('processing-active');
+        if (extras.progress !== undefined) {
+            progressBar.style.width = `${extras.progress}%`;
+        }
     } else {
-        fileItem.classList.remove('processing');
+        fileRow.classList.remove('processing-active');
     }
 
-    if (extras.progress !== undefined) {
-        statusEl.textContent = `${extras.progress.toFixed(0)}%`;
-    }
-
-    if (extras.savings) {
-        statusEl.innerHTML = `✓ ${extras.savings}`;
-        statusEl.classList.add('file-savings');
+    if (status === 'completed') {
+        progressBar.style.width = '100%';
+        // Replace progress bar with savings text
+        if (extras.savings) {
+            colProgress.innerHTML = `<span class="file-savings" style="color: var(--accent-success); font-weight: 600;">✓ ${extras.savings}</span>`;
+        }
+    } else if (status === 'failed') {
+        progressBar.style.background = 'var(--accent-danger)';
+        progressBar.style.width = '100%';
     }
 }
 
@@ -285,6 +296,14 @@ function updateStartButton() {
     $('btn-start').disabled = !$('input-folder').value || !$('output-folder').value || files.length === 0;
 }
 
+async function cancelCompression() {
+    try {
+        await fetch('/api/cancel', { method: 'POST' });
+    } catch (error) {
+        console.error('Failed to cancel:', error);
+    }
+}
+
 async function startCompression() {
     if (files.length === 0 || isCompressing) return;
 
@@ -296,8 +315,8 @@ async function startCompression() {
 
     // Reset progress
     $('progress-bar').style.width = '0%';
-    $('progress-text').textContent = '0/0 files';
-    $('progress-percent').textContent = '0%';
+    $('progress-text').textContent = '0%';
+    $('progress-count').textContent = `0/${files.length}`;
 
     // Reset all file statuses
     files.forEach((f, i) => {
@@ -339,42 +358,42 @@ function finishCompression() {
     isCompressing = false;
     $('btn-start').style.display = 'inline-flex';
     $('btn-cancel').style.display = 'none';
-}
-
-async function cancelCompression() {
-    try {
-        await fetch('/api/cancel', { method: 'POST' });
-    } catch (error) {
-        console.error('Failed to cancel:', error);
-    }
+    // Keep progress section visible if needed, or hide it. 
+    // Usually better to hide it when summary shows.
+    $('progress-section').style.display = 'none';
 }
 
 function showSummary(results) {
     $('summary-section').style.display = 'block';
 
     const savedBytes = results.totalSaved || 0;
+    const originalBytes = results.totalOriginal || 1; // Prevent div by zero
+
     let savedText = formatBytes(savedBytes);
+
+    // Only calculate percentage if we actually compressed something
     if (results.totalOriginal > 0) {
-        const percent = ((savedBytes / results.totalOriginal) * 100).toFixed(1);
+        const percent = ((savedBytes / originalBytes) * 100).toFixed(1);
         savedText += ` (${percent}%)`;
     }
 
     $('stat-saved').textContent = savedText;
-    $('stat-time').textContent = formatDuration(results.duration);
+    $('stat-time').textContent = formatDuration(results.duration || 0);
 
     const encoder = document.querySelector('input[name="encoder"]:checked').value;
     $('stat-encoder').textContent = encoder.toUpperCase();
 }
 
 function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
+    if (isNaN(bytes) || bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k)); // Use Math.abs for negative savings
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + (sizes[i] || 'B');
 }
 
 function formatDuration(seconds) {
+    if (!seconds || isNaN(seconds)) return '0s';
     if (seconds < 60) return `${seconds.toFixed(1)}s`;
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -386,4 +405,69 @@ if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
 } else {
     init();
+}
+
+// ============ Theme Management ============
+let currentTheme = 'system';
+const THEME_ORDER = ['system', 'dark', 'light'];
+const THEME_ICONS = {
+    system: '💻',
+    dark: '🌙',
+    light: '☀️'
+};
+
+function initTheme() {
+    // 1. Get stored preference
+    const stored = localStorage.getItem('mediaSquashTheme');
+    if (stored && THEME_ORDER.includes(stored)) currentTheme = stored;
+
+    // 2. Bind click event to single button
+    const btn = $('theme-toggle-btn');
+    if (btn) {
+        btn.onclick = cycleTheme;
+    }
+
+    // 3. Initial application
+    setTheme(currentTheme);
+
+    // 4. Listen for system changes
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        if (currentTheme === 'system') {
+            applyTheme(e.matches ? 'dark' : 'light');
+        }
+    });
+}
+
+function cycleTheme() {
+    const currentIndex = THEME_ORDER.indexOf(currentTheme);
+    const nextIndex = (currentIndex + 1) % THEME_ORDER.length;
+    setTheme(THEME_ORDER[nextIndex]);
+}
+
+function setTheme(mode) {
+    currentTheme = mode;
+    localStorage.setItem('mediaSquashTheme', mode);
+
+    // Update button icon
+    const btn = $('theme-toggle-btn');
+    if (btn) {
+        btn.textContent = THEME_ICONS[mode];
+        btn.title = `Current: ${mode.charAt(0).toUpperCase() + mode.slice(1)} (Click to switch)`;
+    }
+
+    // Apply logic
+    if (mode === 'system') {
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(isDark ? 'dark' : 'light');
+    } else {
+        applyTheme(mode);
+    }
+}
+
+function applyTheme(resolvedMode) {
+    if (resolvedMode === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+        document.documentElement.removeAttribute('data-theme');
+    }
 }

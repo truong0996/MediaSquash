@@ -16,6 +16,7 @@
     "build": {
         "appId": "com.mediasquash.app",
         "productName": "MediaSquash",
+        "compression": "maximum",
         "win": {
             "target": "portable",
             "icon": "gui/icon.png"
@@ -27,11 +28,23 @@
         },
         "files": [
             "**/*",
-            "!src/test/**"
+            "!src/test/**",
+            "!**/*.md",
+            "!**/*.txt",
+            "!**/*.map",
+            "!**/tsconfig.json",
+            "!**/jsconfig.json",
+            "!**/node_modules/**/test/**",
+            "!**/node_modules/**/tests/**",
+            "!**/node_modules/**/example/**",
+            "!**/node_modules/**/examples/**",
+            "!**/node_modules/ffprobe-static/bin/darwin/**",
+            "!**/node_modules/ffprobe-static/bin/linux/**",
+            "!**/node_modules/ffprobe-static/bin/win32/ia32/**"
         ],
         "asarUnpack": [
-            "**/node_modules/ffmpeg-static/**",
-            "**/node_modules/ffprobe-static/**",
+            "**/node_modules/ffmpeg-static/ffmpeg.exe",
+            "**/node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe",
             "**/node_modules/sharp/**"
         ]
     },
