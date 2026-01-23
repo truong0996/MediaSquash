@@ -25,15 +25,9 @@ const ENCODER_CONFIGS = {
         getOutputOptions: (crf) => [
             '-pix_fmt p010le',
             '-preset p4',
-            '-tune hq',
             '-rc vbr',
             `-cq ${crf}`,
             '-profile:v main10',
-            '-spatial-aq 1',
-            '-temporal-aq 1',
-            '-multipass fullres',
-            '-rc-lookahead 32', 
-            '-b_ref_mode each'
         ]
     },
     amf: {
