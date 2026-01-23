@@ -2,10 +2,10 @@
  * Hardware Encoder Detection and Configuration Module
  * 
  * Supports:
- * - NVIDIA NVENC (h264_nvenc) - Fastest, lowest CPU usage
- * - AMD AMF (h264_amf) - For AMD GPUs and APUs
- * - Intel QuickSync (h264_qsv) - Good fallback for Intel CPUs
- * - Software x264 (libx264) - Universal fallback
+ * - NVIDIA NVENC (hevc_nvenc) - Fastest, lowest CPU usage, 10-bit
+ * - AMD AMF (hevc_amf) - For AMD GPUs and APUs, 10-bit
+ * - Intel QuickSync (hevc_qsv) - Good fallback for Intel CPUs, 10-bit
+ * - Software x265 (libx265) - Universal fallback, 10-bit
  */
 
 const { exec } = require('child_process');
@@ -18,42 +18,51 @@ let ffmpegPath = resolveFFmpegPath();
 // Encoder configurations optimized for quality/speed balance
 const ENCODER_CONFIGS = {
     nvenc: {
-        name: 'NVIDIA NVENC',
-        codec: 'h264_nvenc',
+        name: 'NVIDIA NVENC (HEVC 10-bit)',
+        codec: 'hevc_nvenc',
         // p4 preset is balanced, -cq is quality-based VBR (similar to CRF)
-        // -pix_fmt yuv420p converts 10-bit HEVC (Main 10) to 8-bit for NVENC compatibility
+        // -pix_fmt p010le for 10-bit HEVC
         getOutputOptions: (crf) => [
-            '-pix_fmt yuv420p',
+            '-pix_fmt p010le',
             '-preset p4',
+            '-tune hq',
             '-rc vbr',
             `-cq ${crf}`,
-            '-profile:v high',
+            '-profile:v main10',
             '-spatial-aq 1',
-            '-temporal-aq 1'
+            '-temporal-aq 1',
+            '-multipass fullres',
+            '-rc-lookahead 32', 
+            '-b_ref_mode each'
         ]
     },
     amf: {
-        name: 'AMD AMF',
-        codec: 'h264_amf',
+        name: 'AMD AMF (HEVC 10-bit)',
+        codec: 'hevc_amf',
         // quality preset, qp_i/qp_p for quality control (similar to CRF)
-        // -pix_fmt yuv420p for 10-bit HEVC compatibility
+        // -pix_fmt p010le for 10-bit HEVC
         getOutputOptions: (crf) => [
-            '-pix_fmt yuv420p',
+            '-pix_fmt p010le',
             '-quality quality',
             `-qp_i ${crf}`,
             `-qp_p ${crf}`,
-            '-profile:v high'
+            '-profile:v main10',
+            '-preanalysis 1',
+            '-vbaq 1'   
         ]
     },
     qsv: {
-        name: 'Intel QuickSync',
-        codec: 'h264_qsv',
-        // -pix_fmt yuv420p for 10-bit HEVC compatibility
+        name: 'Intel QuickSync (HEVC 10-bit)',
+        codec: 'hevc_qsv',
+        // -pix_fmt p010le for 10-bit HEVC
         getOutputOptions: (crf) => [
-            '-pix_fmt yuv420p',
+            '-pix_fmt p010le',
             '-preset medium',
             `-global_quality ${crf}`,
-            '-profile:v high'
+            '-profile:v main10',
+            '-look_ahead 1',
+            '-look_ahead_depth 40',
+            '-extbrc 1'
         ]
     },
     x264: {
@@ -152,8 +161,8 @@ async function detectAvailableEncoders(forceRecheck = false) {
     };
 
     // Check NVENC (NVIDIA)
-    if (await isEncoderAvailable('h264_nvenc')) {
-        results.nvenc = await testEncoder('h264_nvenc');
+    if (await isEncoderAvailable('hevc_nvenc')) {
+        results.nvenc = await testEncoder('hevc_nvenc');
         if (results.nvenc) {
             console.log('  ✓ NVIDIA NVENC: Available');
         } else {
@@ -164,8 +173,8 @@ async function detectAvailableEncoders(forceRecheck = false) {
     }
 
     // Check AMF (AMD)
-    if (await isEncoderAvailable('h264_amf')) {
-        results.amf = await testEncoder('h264_amf');
+    if (await isEncoderAvailable('hevc_amf')) {
+        results.amf = await testEncoder('hevc_amf');
         if (results.amf) {
             console.log('  ✓ AMD AMF: Available');
         } else {
@@ -176,8 +185,8 @@ async function detectAvailableEncoders(forceRecheck = false) {
     }
 
     // Check QuickSync (Intel)
-    if (await isEncoderAvailable('h264_qsv')) {
-        results.qsv = await testEncoder('h264_qsv');
+    if (await isEncoderAvailable('hevc_qsv')) {
+        results.qsv = await testEncoder('hevc_qsv');
         if (results.qsv) {
             console.log('  ✓ Intel QuickSync: Available');
         } else {
