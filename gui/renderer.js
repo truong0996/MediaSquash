@@ -48,6 +48,21 @@ async function init() {
     // Connect SSE for real-time updates
     connectSSE();
 
+    // Modal Interaction
+    $('btn-close-modal').onclick = closeModal;
+    $('btn-modal-ok').onclick = closeModal;
+
+    // Click outside to close
+    $('summary-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'summary-modal') {
+            closeModal();
+        }
+    });
+
+    // Category by Year toggle logic - REMOVED (Month is now independent)
+    // const yearCheckbox = $('category-by-year');
+    // const monthCheckbox = $('category-by-month');
+
     console.log('GUI initialized');
 }
 
@@ -311,7 +326,8 @@ async function startCompression() {
     $('btn-start').style.display = 'none';
     $('btn-cancel').style.display = 'inline-flex';
     $('progress-section').style.display = 'block';
-    $('summary-section').style.display = 'none';
+    // Summary is now a modal, no need to hide section manually here as it's not inline.
+    // $('summary-modal').classList.remove('show'); // Optional assurance
 
     // Reset progress
     $('progress-bar').style.width = '0%';
@@ -340,7 +356,8 @@ async function startCompression() {
                 crf: $('crf-slider').value,
                 flatten: $('flatten-output').checked,
                 renameOnly: $('rename-only').checked,
-                categoryByYear: $('category-by-year').checked
+                categoryByYear: $('category-by-year').checked,
+                categoryByMonth: $('category-by-month').checked
             })
         });
 
@@ -364,7 +381,15 @@ function finishCompression() {
 }
 
 function showSummary(results) {
-    $('summary-section').style.display = 'block';
+    const modal = $('summary-modal');
+    // Show modal
+    modal.style.display = 'flex';
+    // Trigger reflow to enable transition
+    modal.offsetHeight;
+    modal.classList.add('show');
+
+    // Hide progress bar on main UI
+    $('progress-section').style.display = 'none';
 
     const savedBytes = results.totalSaved || 0;
     const originalBytes = results.totalOriginal || 1; // Prevent div by zero
@@ -380,8 +405,51 @@ function showSummary(results) {
     $('stat-saved').textContent = savedText;
     $('stat-time').textContent = formatDuration(results.duration || 0);
 
-    const encoder = document.querySelector('input[name="encoder"]:checked').value;
-    $('stat-encoder').textContent = encoder.toUpperCase();
+    $('stat-saved').textContent = savedText;
+    $('stat-time').textContent = formatDuration(results.duration || 0);
+
+    // Determine what to show in "Encoder" field
+    const fileType = document.querySelector('input[name="file-type"]:checked').value;
+    let encoderText = '-';
+
+    if (fileType === 'image') {
+        const fmt = document.querySelector('input[name="image-format"]:checked').value;
+        encoderText = fmt.toUpperCase();
+        // Update label to say "Format" instead of "Encoder"? 
+        // Or just leave "Encoder" as generic term. "Format" is better contextually.
+        // Let's stick to the text update for now, maybe change header dynamically if possible?
+        // Changing header text requires selecting the sibling label.
+        // Simple fix: Show "WEBP" / "JPEG"
+    } else if (fileType === 'video') {
+        const enc = document.querySelector('input[name="encoder"]:checked').value;
+        encoderText = enc.toUpperCase();
+    } else {
+        // "ALL" mode
+        encoderText = 'MIXED';
+        // Or show both? "NVENC / WEBP"?
+        // Let's keep it simple: "Mixed" or check what counts were.
+        // Ideally we'd know count of images vs videos.
+        // For now "Mixed" is safe.
+    }
+
+    // Optional: dynamically change label from "Encoder" to "Format"
+    const encoderLabel = document.querySelector('.summary-item:last-child .summary-label');
+    if (encoderLabel) {
+        encoderLabel.textContent = fileType === 'image' ? 'Format' : 'Encoder';
+    }
+
+    $('stat-encoder').textContent = encoderText;
+}
+
+function closeModal() {
+    const modal = $('summary-modal');
+    modal.classList.remove('show');
+    setTimeout(() => {
+        modal.style.display = 'none';
+        $('btn-start').style.display = 'inline-flex';
+        // Reset progress bar if desired, or keep it until next scan?
+        // For now, allow start button to appear again
+    }, 300); // Match CSS transition duration
 }
 
 function formatBytes(bytes) {

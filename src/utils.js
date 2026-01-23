@@ -331,22 +331,65 @@ async function getCaptureDate(filePath) {
                         resolve(null);
                         return;
                     }
+
+                    // Priority list for video creation time tags
+                    // 1. Apple-specific high-precision tags
+                    // 2. Standard creation_time
+                    const tags = metadata.format?.tags || {};
                     const creationTime =
-                        metadata.format?.tags?.creation_time ||
+                        tags['com.apple.quicktime.creationdate'] ||
+                        tags['creation_date'] ||
+                        tags['creation_time'] ||
                         metadata.streams?.find(s => s.tags?.creation_time)?.tags?.creation_time;
 
                     if (creationTime) {
                         // Video metadata is almost exclusively stored in UTC (e.g., MP4 spec).
-                        // We must shift this UTC timestamp to Local Time so the filename reflects
-                        // when you actually recorded it, not the Greenwich Mean Time.
-                        const utcDate = new Date(creationTime);
-                        resolve(toLocalAsUTC(utcDate));
-                    } else {
-                        resolve(null);
+                        // However, com.apple.quicktime.creationdate often includes an offset (e.g. 2023-10-14T15:30:45+0700).
+                        // Date constructor handles both.
+                        const dateObj = new Date(creationTime);
+                        if (!isNaN(dateObj.getTime())) {
+                            // If it's a standard UTC string without offset, we shift it to local.
+                            // If it already had an offset, new Date() converted it to local machine time.
+                            // But we want "Fake UTC" for formatDateForFilename.
+
+                            // Check if the source string had an offset
+                            const hasOffset = creationTime.includes('+') || (creationTime.match(/-/g) || []).length > 2;
+
+                            if (hasOffset) {
+                                // Already local time in dateObj, just shift to Fake UTC
+                                resolve(toLocalAsUTC(dateObj));
+                            } else {
+                                // Likely UTC (Z or no offset), shift to local
+                                resolve(toLocalAsUTC(dateObj));
+                            }
+                            return;
+                        }
                     }
+                    resolve(null);
                 });
             });
         } catch {
+        }
+
+        // --- SIBLING FALLBACK (For Live Photos) ---
+        // If metadata extraction failed, check for a companion image file (HEIC or JPG)
+        if (!metadataDate) {
+            const dir = path.dirname(filePath);
+            const ext = path.extname(filePath);
+            const baseName = path.basename(filePath, ext);
+
+            const imageCandidates = ['.heic', '.heif', '.jpg', '.jpeg', '.png'];
+            for (const imgExt of imageCandidates) {
+                const siblingPath = path.join(dir, baseName + imgExt);
+                if (fs.existsSync(siblingPath)) {
+                    // Try to get date from sibling image
+                    const siblingDate = await getCaptureDate(siblingPath);
+                    if (siblingDate) {
+                        metadataDate = siblingDate;
+                        break;
+                    }
+                }
+            }
         }
 
         try {
@@ -356,15 +399,10 @@ async function getCaptureDate(filePath) {
         }
 
         // Use Metadata if available (shifted to local), otherwise file system mtime
-        if (metadataDate && mtimeDate) {
-            // Check for sanity: if metadata date is in the future compared to mtime, it might be corrupt.
-            // But since we shifted metadata to local, strict comparison is tricky.
-            // Generally, rely on metadata if it exists.
+        if (metadataDate) {
             return metadataDate;
         } else if (mtimeDate) {
             return mtimeDate;
-        } else if (metadataDate) {
-            return metadataDate;
         }
 
         return null;

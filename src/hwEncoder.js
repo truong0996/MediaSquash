@@ -75,6 +75,8 @@ const ENCODER_CONFIGS = {
             `-crf ${crf}`,
             `-preset ${preset}`,
             `-threads ${threads}`,
+            '-pix_fmt yuv420p10le', // 10-bit color depth
+            '-profile:v main10',    // Main 10 profile for HDR/10-bit
             '-tag:v hvc1'  // Apple/QuickTime compatibility tag
         ]
     }

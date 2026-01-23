@@ -13,7 +13,7 @@ const DEFAULT_SETTINGS = {
     crf: 22,
     preset: 'medium', // For x264/x265 software encoders
     audioCodec: 'aac',
-    audioBitrate: '128k',
+    audioBitrate: '256k',
     threads: 0, // 0 = auto (for x264/x265 software encoders)
     videoJobs: 2 // Number of videos to process in parallel
 };

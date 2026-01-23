@@ -102,7 +102,7 @@ app.post('/api/scan', (req, res) => {
 
 // Start compression
 app.post('/api/compress', async (req, res) => {
-    const { files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear } = req.body;
+    const { files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth } = req.body;
 
     if (compressionState.isRunning) {
         return res.status(400).json({ error: 'Compression already in progress' });
@@ -138,10 +138,10 @@ app.post('/api/compress', async (req, res) => {
     res.json({ status: 'started', total: files.length });
 
     // Process files
-    processFiles(files, outputFolder, inputFolder, encoder, imageFormat, parseInt(quality), parseInt(crf), flatten, renameOnly, categoryByYear);
+    processFiles(files, outputFolder, inputFolder, encoder, imageFormat, parseInt(quality), parseInt(crf), flatten, renameOnly, categoryByYear, categoryByMonth);
 });
 
-async function processFiles(files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear) {
+async function processFiles(files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth) {
     // Dynamic concurrency based on CPU cores
     const os = require('os');
     const cpuCount = os.cpus().length;
@@ -200,14 +200,33 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
 
         // Calculate output path based on options
         let outputPath;
-        if (flatten || categoryByYear) {
-            if (categoryByYear && yearFolder) {
-                outputPath = path.join(outputFolder, yearFolder, newFilename);
-            } else {
-                outputPath = path.join(outputFolder, newFilename);
+
+        if (flatten) {
+            // FLATTEN: All files go directly to output folder (no subfolders)
+            outputPath = path.join(outputFolder, newFilename);
+        } else if (categoryByYear || categoryByMonth) {
+            // CATEGORY: Organize by Year and/or Month
+            let parts = [outputFolder];
+
+            // 1. Add Year Folder if selected
+            if (categoryByYear && yearFolder && yearFolder !== 'other') {
+                parts.push(yearFolder);
             }
+
+            // 2. Add Month Folder if selected (format: YYYYMM__)
+            if (categoryByMonth && captureDate) {
+                const pad = (num) => String(num).padStart(2, '0');
+                const monthStr = pad(captureDate.getMonth() + 1);
+                const yearPrefix = captureDate.getFullYear().toString();
+                const monthFolder = `${yearPrefix}${monthStr}__`;
+                parts.push(monthFolder);
+            }
+
+            // 3. Add Filename
+            parts.push(newFilename);
+            outputPath = path.join(...parts);
         } else {
-            // Preserve subfolder structure but still rename file
+            // PRESERVE: Keep original subfolder structure
             const relativePath = path.relative(inputFolder, file.path);
             const relativeDir = path.dirname(relativePath);
             outputPath = path.join(outputFolder, relativeDir, newFilename);

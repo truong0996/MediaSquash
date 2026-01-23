@@ -69,6 +69,11 @@
                 <div class="custom-check"></div>
                 Category by year
             </label>
+            <label class="checkbox-option">
+                <input type="checkbox" id="category-by-month">
+                <div class="custom-check"></div>
+                Category by month
+            </label>
 
             <!-- File Type Switcher -->
             <div style="flex: 1"></div> <!-- Spacer -->
@@ -217,8 +222,14 @@
             </button>
         </div>
 
-        <!-- Summary Card -->
-        <div id="summary-section" class="summary-card">
+        <!-- Summary Removed from here -->
+
+    </div>
+
+    <!-- Summary Modal Overlay -->
+    <div id="summary-modal" class="modal-overlay">
+        <div class="summary-card modal-content">
+            <button class="modal-close" id="btn-close-modal">×</button>
             <div class="summary-header">
                 <span>🎉 Compression Complete!</span>
             </div>
@@ -236,8 +247,11 @@
                     <div class="summary-value encoder" id="stat-encoder">-</div>
                 </div>
             </div>
+            <div style="display: flex; justify-content: center; margin-top: 24px;">
+                <button class="btn-start" id="btn-modal-ok"
+                    style="width: auto; padding: 0 40px; height: 44px; font-size: 14px;">OK</button>
+            </div>
         </div>
-
     </div>
 
     <script src="renderer.js"></script>
