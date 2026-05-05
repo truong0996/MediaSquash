@@ -54,6 +54,74 @@ function getOptimalThreads() {
 }
 
 /**
+ * Get available system memory in bytes
+ * @returns {number}
+ */
+function getAvailableMemory() {
+    try {
+        const totalMem = os.totalmem();
+        const freeMem = os.freemem();
+        return freeMem;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * Get recommended video concurrency based on available memory
+ * Video encoding uses ~1-4GB RAM per worker
+ * @param {number} videoCount - Number of videos to process
+ * @returns {number}
+ */
+function getRecommendedVideoConcurrency(videoCount) {
+    const cpuCount = os.cpus().length;
+    const freeMem = getAvailableMemory();
+
+    // Default: use half CPU, 2GB per video worker
+    let maxByCpu = Math.max(1, Math.min(Math.floor(cpuCount / 2), 6));
+    let maxByMem = Math.max(1, Math.floor(freeMem / (2 * 1024 * 1024 * 1024)));
+
+    // Use the lower of CPU and memory constraints
+    let recommended = Math.min(maxByCpu, maxByMem, videoCount);
+
+    return Math.max(1, recommended);
+}
+
+/**
+ * Check if system is low on memory (below 1GB free)
+ * @returns {boolean}
+ */
+function isLowMemory() {
+    const freeMem = getAvailableMemory();
+    return freeMem < 1024 * 1024 * 1024; // 1GB
+}
+
+/**
+ * Check if a file has already been processed
+ * Returns true if output exists and is newer than input (or same size for lossless)
+ * @param {string} inputPath - Input file path
+ * @param {string} outputPath - Output file path
+ * @returns {boolean}
+ */
+function isAlreadyProcessed(inputPath, outputPath) {
+    try {
+        if (!fs.existsSync(outputPath)) return false;
+
+        const inputStat = fs.statSync(inputPath);
+        const outputStat = fs.statSync(outputPath);
+
+        // Output is newer than input
+        if (outputStat.mtime > inputStat.mtime) {
+            // If output is significantly smaller, consider it processed
+            if (outputStat.size < inputStat.size) return true;
+            // If same size but newer, likely re-compressed (not a lossless case)
+            return true;
+        }
+    } catch {}
+    return false;
+}
+
+/**
  * Process items in parallel with concurrency limit
  * @param {Array} items - Items to process
  * @param {Function} processor - Async function to process each item
@@ -488,6 +556,48 @@ function getFFprobePath() {
     return ffprobePath;
 }
 
+const captureDateCache = new Map();
+
+function clearCaptureDateCache() {
+    captureDateCache.clear();
+}
+
+function getCaptureDateCached(filePath) {
+    if (captureDateCache.has(filePath)) {
+        return captureDateCache.get(filePath);
+    }
+    return null;
+}
+
+function setCaptureDateCached(filePath, date) {
+    captureDateCache.set(filePath, date);
+}
+
+function validateQuality(value) {
+    const q = parseInt(value, 10);
+    if (isNaN(q)) return 88;
+    return Math.max(1, Math.min(100, q));
+}
+
+function validateCrf(value) {
+    const crf = parseInt(value, 10);
+    if (isNaN(crf)) return 22;
+    return Math.max(0, Math.min(51, crf));
+}
+
+function validateImageFormat(format) {
+    const valid = ['jpeg', 'jpg', 'webp', 'avif'];
+    const f = format?.toLowerCase();
+    const normalized = f === 'jpg' ? 'jpeg' : f;
+    return valid.includes(normalized) ? normalized : 'webp';
+}
+
+function validateEncoder(encoder) {
+    const valid = ['auto', 'nvenc', 'amf', 'qsv', 'x264', 'x265'];
+    const e = encoder?.toLowerCase();
+    return valid.includes(e) ? e : 'auto';
+}
+
 module.exports = {
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -508,5 +618,16 @@ module.exports = {
     formatDateForFolder,
     setFileMetadata,
     getFFmpegPath,
-    getFFprobePath
+    getFFprobePath,
+    clearCaptureDateCache,
+    getCaptureDateCached,
+    setCaptureDateCached,
+    validateQuality,
+    validateCrf,
+    validateImageFormat,
+    validateEncoder,
+    getAvailableMemory,
+    getRecommendedVideoConcurrency,
+    isLowMemory,
+    isAlreadyProcessed
 };

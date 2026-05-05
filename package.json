@@ -11,7 +11,8 @@
         "server": "node server.js",
         "gui": "node server.js",
         "dist": "electron-builder",
-        "postinstall": "electron-builder install-app-deps"
+        "postinstall": "electron-builder install-app-deps",
+        "test": "node src/test/validation.test.js"
     },
     "build": {
         "appId": "com.mediasquash.app",

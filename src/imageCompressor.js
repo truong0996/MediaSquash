@@ -27,60 +27,68 @@ const COMPRESSION_SETTINGS = {
 async function convertHeicToJpeg(inputPath, outputPath, options = {}) {
     const inputBuffer = fs.readFileSync(inputPath);
     const quality = options.quality || 88;
+    const targetFormat = options.targetFormat || 'jpeg';
 
-    // Check magic bytes to verify file format
-    // HEIC/HEIF files start with "ftyp" at byte 4-8
+    const formatMap = {
+        jpeg: 'jpeg',
+        jpg: 'jpeg',
+        webp: 'webp',
+        avif: 'avif'
+    };
+    const sharpFormat = formatMap[targetFormat] || 'jpeg';
+
     const hasFtypHeader = inputBuffer.length > 12 &&
         inputBuffer.toString('ascii', 4, 8) === 'ftyp';
 
-    // Common HEIC/HEIF brand codes
     const brand = inputBuffer.length > 12 ? inputBuffer.toString('ascii', 8, 12) : '';
     const heicBrands = ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1', 'miaf'];
     const isLikelyHeic = hasFtypHeader && heicBrands.some(b => brand.toLowerCase().startsWith(b.toLowerCase()));
 
-    // Try heic-convert first if it looks like HEIC
     if (isLikelyHeic) {
         try {
             const convert = (await import('heic-convert')).default;
 
-            // Convert HEIC to raw JPEG buffer
             const rawJpegBuffer = await convert({
                 buffer: inputBuffer,
                 format: 'JPEG',
-                quality: 1 // Max quality for initial conversion, Sharp will handle final compression
+                quality: 1
             });
 
-            // Compress the JPEG with Sharp for optimal file size
-            await sharp(rawJpegBuffer)
-                .rotate() // Auto-rotate based on EXIF
-                .withMetadata()
-                .jpeg({
-                    mozjpeg: true,
-                    quality: quality
-                })
-                .toFile(outputPath);
+            let pipeline = sharp(rawJpegBuffer)
+                .rotate()
+                .withMetadata();
 
+            if (sharpFormat === 'jpeg') {
+                pipeline = pipeline.jpeg({ mozjpeg: true, quality });
+            } else if (sharpFormat === 'webp') {
+                pipeline = pipeline.webp({ quality });
+            } else if (sharpFormat === 'avif') {
+                pipeline = pipeline.avif({ quality });
+            }
+
+            await pipeline.toFile(outputPath);
             return { success: true, usedFallback: false };
         } catch (heicError) {
-            // heic-convert failed, try Sharp fallback
             console.log(`    ⚠️  HEIC decode failed, trying Sharp fallback...`);
         }
     }
 
-    // Fallback: Try Sharp directly (works if file is mislabeled or Sharp has HEIF support)
     try {
-        await sharp(inputPath)
+        let pipeline = sharp(inputPath)
             .rotate()
-            .withMetadata()
-            .jpeg({
-                mozjpeg: true,
-                quality: quality
-            })
-            .toFile(outputPath);
+            .withMetadata();
 
+        if (sharpFormat === 'jpeg') {
+            pipeline = pipeline.jpeg({ mozjpeg: true, quality });
+        } else if (sharpFormat === 'webp') {
+            pipeline = pipeline.webp({ quality });
+        } else if (sharpFormat === 'avif') {
+            pipeline = pipeline.avif({ quality });
+        }
+
+        await pipeline.toFile(outputPath);
         return { success: true, usedFallback: true };
     } catch (sharpError) {
-        // Both methods failed - throw a combined error
         const fileName = path.basename(inputPath);
         throw new Error(
             `Unable to process HEIC file "${fileName}". ` +
@@ -113,7 +121,7 @@ async function compressImage(inputPath, outputPath, options = {}) {
     // Special handling for HEIC/HEIF input (Sharp lacks HEIF plugin on most systems)
     // Use heic-convert package for native HEIC decoding, with Sharp fallback
     if (inputExt === 'heic' || inputExt === 'heif') {
-        const result = await convertHeicToJpeg(inputPath, outputPath, { quality: settings.quality });
+        const result = await convertHeicToJpeg(inputPath, outputPath, { quality: settings.quality, targetFormat });
 
         const compressedSize = getFileSize(outputPath);
         const conversionNote = result.usedFallback

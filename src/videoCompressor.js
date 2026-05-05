@@ -44,6 +44,8 @@ async function compressVideo(inputPath, outputPath, options = {}) {
     // Calculate optimal threads for software encoders (x264/x265)
     const threads = settings.threads || getOptimalThreads();
 
+    let isCancelled = false;
+
     return new Promise((resolve, reject) => {
         // Get encoder-specific output options
         let outputOptions;
@@ -81,11 +83,21 @@ async function compressVideo(inputPath, outputPath, options = {}) {
                 }
             })
             .on('progress', (progress) => {
+                // Check for cancellation
+                if (options.shouldCancel && options.shouldCancel()) {
+                    isCancelled = true;
+                    ffmpegCommand.kill('SIGKILL');
+                    reject(new Error('Compression cancelled'));
+                    return;
+                }
                 if (options.onProgress) {
                     options.onProgress(progress);
                 }
             })
             .on('end', () => {
+                // Clean up command to free memory
+                ffmpegCommand.kill();
+
                 let compressedSize = getFileSize(outputPath);
                 let note = '';
 
@@ -122,6 +134,8 @@ async function compressVideo(inputPath, outputPath, options = {}) {
                 });
             })
             .on('error', (err) => {
+                // Clean up on error
+                try { ffmpegCommand.kill(); } catch {}
                 reject({
                     input: inputPath,
                     output: outputPath,
@@ -160,9 +174,78 @@ function isSupportedFormat(filePath) {
     return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
+/**
+ * Calculate adaptive CRF based on video properties
+ * Higher CRF = smaller file, lower quality
+ * @param {number} baseCrf - Base CRF (default 22)
+ * @param {Object} videoInfo - Video metadata from ffprobe
+ * @returns {number}
+ */
+function getAdaptiveCrf(baseCrf, videoInfo) {
+    let crf = baseCrf || 22;
+
+    try {
+        const videoStream = videoInfo.streams?.find(s => s.codec_type === 'video');
+        if (!videoStream) return crf;
+
+        const width = videoStream.width || 0;
+        const height = videoStream.height || 0;
+        const duration = videoStream.duration || 0;
+
+        // Resolution adjustment
+        if (height >= 2160) {
+            // 4K: more pixels = artifacts less visible
+            crf += 2;
+        } else if (height >= 1440) {
+            // 2K/QHD: slightly more pixels
+            crf += 1;
+        } else if (height <= 480) {
+            // 480p or less: fewer pixels = artifacts more visible
+            crf -= 2;
+        } else if (height <= 720) {
+            // 720p: standard
+            crf -= 1;
+        }
+
+        // Duration adjustment
+        if (duration > 600) {
+            // >10 min: more savings on longer videos
+            crf += 1;
+        }
+
+        // Clamp CRF to valid range
+        crf = Math.max(0, Math.min(51, crf));
+    } catch {
+        // On error, return base CRF
+        return baseCrf || 22;
+    }
+
+    return crf;
+}
+
+/**
+ * Get video info with adaptive CRF
+ * @param {string} inputPath - Path to video
+ * @param {number} baseCrf - Base CRF
+ * @returns {Promise<{crf: number, width: number, height: number, duration: number}>}
+ */
+async function getVideoInfoWithCrf(inputPath, baseCrf) {
+    const info = await getVideoInfo(inputPath);
+    const videoStream = info.streams?.find(s => s.codec_type === 'video');
+
+    return {
+        crf: getAdaptiveCrf(baseCrf, info),
+        width: videoStream?.width || 0,
+        height: videoStream?.height || 0,
+        duration: parseFloat(videoStream?.duration) || 0
+    };
+}
+
 module.exports = {
     compressVideo,
     getVideoInfo,
+    getVideoInfoWithCrf,
+    getAdaptiveCrf,
     isSupportedFormat,
     detectAvailableEncoders,
     SUPPORTED_EXTENSIONS,

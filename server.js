@@ -9,11 +9,11 @@ const fs = require('fs');
 
 // Import compression modules
 const { compressImage } = require('./src/imageCompressor');
-const { compressVideo, detectAvailableEncoders } = require('./src/videoCompressor');
-const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename, normalizeOutputExtension, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } = require('./src/utils');
+const { compressVideo, detectAvailableEncoders, getAdaptiveCrf, getVideoInfo } = require('./src/videoCompressor');
+const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename, normalizeOutputExtension, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, validateQuality, validateCrf, validateImageFormat, validateEncoder, clearCaptureDateCache, setCaptureDateCached, getCaptureDateCached, getAvailableMemory, getRecommendedVideoConcurrency, isLowMemory, isAlreadyProcessed } = require('./src/utils');
 
 const app = express();
-const PORT = 3847; // Random port to avoid conflicts
+const PORT = process.env.PORT || 3847;
 
 // Middleware
 app.use(express.json({ limit: '50mb' })); // Increased limit for large file lists
@@ -102,21 +102,29 @@ app.post('/api/scan', (req, res) => {
 
 // Start compression
 app.post('/api/compress', async (req, res) => {
-    const { files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth } = req.body;
+    let { files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth } = req.body;
 
     if (compressionState.isRunning) {
         return res.status(400).json({ error: 'Compression already in progress' });
     }
 
-    // Validate
+    // Validate and normalize inputs
     if (!files || files.length === 0) {
         return res.status(400).json({ error: 'No files to compress' });
     }
+
+    quality = validateQuality(quality);
+    crf = validateCrf(crf);
+    encoder = validateEncoder(encoder);
+    imageFormat = validateImageFormat(imageFormat);
 
     // Ensure output folder exists
     if (!fs.existsSync(outputFolder)) {
         fs.mkdirSync(outputFolder, { recursive: true });
     }
+
+    // Clear cache and start compression
+    clearCaptureDateCache();
 
     // Start compression in background
     compressionState = {
@@ -142,24 +150,29 @@ app.post('/api/compress', async (req, res) => {
 });
 
 async function processFiles(files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth) {
-    // Dynamic concurrency based on CPU cores
+    // Dynamic concurrency based on CPU cores AND available memory
     const os = require('os');
     const cpuCount = os.cpus().length;
+    const freeMem = getAvailableMemory();
 
-    // Images: Use most cores (they're fast, low memory)
-    const IMAGE_CONCURRENCY = Math.max(4, Math.min(cpuCount, 12));  // 4-12 based on cores
+    // Images: Use most cores (they're fast, low memory ~50MB per worker)
+    const IMAGE_CONCURRENCY = Math.max(4, Math.min(cpuCount, 12));
 
-    // Videos: Using GPU encoding (NVENC/QSV), so GPU does the heavy lifting
-    // More workers = better throughput since CPU mainly decodes/feeds data
-    // Scale based on CPU: small CPUs (8 threads) = 3-4 workers, large CPUs (16+ threads) = 6 workers
-    const VIDEO_CONCURRENCY = Math.max(2, Math.min(6, Math.floor(cpuCount / 2)));
+    // Videos: Consider both CPU and memory (~2GB per worker)
+    // Use lower of CPU-limited or memory-limited concurrency
+    const VIDEO_CONCURRENCY = getRecommendedVideoConcurrency(files.length);
 
     // Threads for decoding/preprocessing (GPU handles encoding)
-    // Each worker gets a fair share of CPU for decoding
     const THREADS_PER_VIDEO = Math.max(2, Math.floor(cpuCount / VIDEO_CONCURRENCY));
 
-    console.log(`⚡ Dynamic concurrency: ${IMAGE_CONCURRENCY} images, ${VIDEO_CONCURRENCY} videos (${cpuCount} CPU cores detected)`);
-    console.log(`   Video threads per worker: ${THREADS_PER_VIDEO} (GPU encoding, threads for decoding)`);
+    const memGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
+    console.log(`⚡ Dynamic concurrency: ${IMAGE_CONCURRENCY} images, ${VIDEO_CONCURRENCY} videos`);
+    console.log(`   CPU: ${cpuCount} cores | RAM: ${memGB}GB free | Video workers: ${VIDEO_CONCURRENCY}`);
+
+    // Check for low memory warning
+    if (isLowMemory()) {
+        console.log(`   ⚠️  LOW MEMORY WARNING - reduced concurrency`);
+    }
 
     // Helper to process a single file
     async function processSingleFile(file, index) {
@@ -249,6 +262,20 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             fs.mkdirSync(parentDir, { recursive: true });
         }
 
+        // Check if already processed (skip if output exists and is newer)
+        const options = { flatten, renameOnly, categoryByYear, categoryByMonth };
+        const shouldSkip = !renameOnly && isAlreadyProcessed(file.path, outputPath);
+
+        if (shouldSkip) {
+            compressionState.processed++;
+            compressionState.results.success++;
+            const outputStat = fs.statSync(outputPath);
+            compressionState.results.totalOriginal += originalSize;
+            compressionState.results.totalCompressed += outputStat.size;
+            sendSSE('file-skipped', { index, name: file.name, sizeSaved: originalSize - outputStat.size });
+            return;
+        }
+
         sendSSE('file-start', { index, name: file.name, type: file.type });
 
         try {
@@ -274,10 +301,18 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             } else if (file.type === 'image') {
                 result = await compressImage(file.path, outputPath, { quality });
             } else {
+                // Get video info for adaptive CRF
+                let adaptiveCrf = crf;
+                try {
+                    const videoInfo = await getVideoInfo(file.path);
+                    adaptiveCrf = getAdaptiveCrf(crf, videoInfo);
+                } catch {}
+
                 result = await compressVideo(file.path, outputPath, {
                     encoder: encoder,
-                    crf: crf,
-                    threads: THREADS_PER_VIDEO,  // Use calculated optimal threads
+                    crf: adaptiveCrf,
+                    threads: THREADS_PER_VIDEO,
+                    shouldCancel: () => compressionState.shouldCancel,
                     onProgress: (progress) => {
                         sendSSE('file-progress', { index, percent: progress.percent || 0 });
                     }

@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const { compressImage } = require('./imageCompressor');
 const { compressVideo } = require('./videoCompressor');
-const { isImage, isVideo, generateOutputPath, normalizeOutputExtension, formatFileSize, getCompressionRatio, getOptimalConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata } = require('./utils');
+const { isImage, isVideo, generateOutputPath, normalizeOutputExtension, formatFileSize, getCompressionRatio, getOptimalConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata, clearCaptureDateCache, setCaptureDateCached, validateQuality, validateCrf, validateImageFormat, validateEncoder } = require('./utils');
 
 // Package info
 const packageJson = require('../package.json');
@@ -201,7 +201,7 @@ async function processDirectory(inputDir, options, type = 'all') {
                             // HEIC/HEIF files must be converted even in renameOnly mode
                             if (ext === '.heic' || ext === '.heif') {
                                 const result = await compressImage(filePath, currentOutputPath, {
-                                    quality: parseInt(options.quality, 10)
+                                    quality: validateQuality(options.quality)
                                 });
                                 setFileMetadata(filePath, currentOutputPath);
                                 totalOriginal += result.originalSize;
@@ -223,7 +223,7 @@ async function processDirectory(inputDir, options, type = 'all') {
                         }
 
                         const result = await compressImage(filePath, currentOutputPath, {
-                            quality: parseInt(options.quality, 10)
+                            quality: validateQuality(options.quality)
                         });
                         setFileMetadata(filePath, currentOutputPath);
 
@@ -277,9 +277,9 @@ async function processDirectory(inputDir, options, type = 'all') {
                         console.log(chalk.gray(`   Processing: ${fileName}...`));
                         let currentCmd = null;
                         const result = await compressVideo(filePath, currentOutputPath, {
-                            crf: parseInt(options.crf, 10),
+                            crf: validateCrf(options.crf),
                             preset: options.preset || 'medium',
-                            encoder: options.encoder || 'auto',
+                            encoder: validateEncoder(options.encoder),
                             onStart: (cmd) => {
                                 currentCmd = cmd;
                                 activeProcesses.add(cmd);
@@ -380,7 +380,7 @@ program
                 console.log(chalk.gray(`   Input:  ${inputPath}`));
                 console.log(chalk.gray(`   Output: ${currentOutputPath}`));
 
-                const result = await compressImage(inputPath, currentOutputPath, { quality: parseInt(options.quality, 10) });
+                const result = await compressImage(inputPath, currentOutputPath, { quality: validateQuality(options.quality) });
                 setFileMetadata(inputPath, currentOutputPath);
 
                 console.log(chalk.green('\n✅ Compression complete!'));
@@ -444,17 +444,18 @@ program
                     return;
                 }
 
-                const crf = parseInt(options.crf, 10);
+                const crf = validateCrf(options.crf);
+                const encoder = validateEncoder(options.encoder);
 
                 console.log(chalk.blue('🎬 Compressing video...'));
                 console.log(chalk.gray(`   Input:  ${inputPath}`));
                 console.log(chalk.gray(`   Output: ${currentOutputPath}`));
-                console.log(chalk.gray(`   CRF:    ${crf} | Encoder: ${options.encoder}`));
+                console.log(chalk.gray(`   CRF:    ${crf} | Encoder: ${encoder}`));
 
                 const result = await compressVideo(inputPath, currentOutputPath, {
                     crf,
                     preset: options.preset,
-                    encoder: options.encoder,
+                    encoder: encoder,
                     onStart: (cmd) => activeProcesses.add(cmd),
                     onProgress: (progress) => {
                         if (progress.percent) {
