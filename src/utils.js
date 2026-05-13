@@ -98,7 +98,8 @@ function isLowMemory() {
 
 /**
  * Check if a file has already been processed
- * Returns true if output exists and is newer than input (or same size for lossless)
+ * Returns true if output exists and was generated after the input.
+ * This also handles outputs whose mtime was intentionally copied from the input.
  * @param {string} inputPath - Input file path
  * @param {string} outputPath - Output file path
  * @returns {boolean}
@@ -111,12 +112,14 @@ function isAlreadyProcessed(inputPath, outputPath) {
         const outputStat = fs.statSync(outputPath);
 
         // Output is newer than input
-        if (outputStat.mtime > inputStat.mtime) {
-            // If output is significantly smaller, consider it processed
-            if (outputStat.size < inputStat.size) return true;
-            // If same size but newer, likely re-compressed (not a lossless case)
+        if (outputStat.mtimeMs > inputStat.mtimeMs) {
             return true;
         }
+
+        // Compression preserves mtime, so fall back to creation/change time.
+        const outputCreatedMs = Math.max(outputStat.birthtimeMs || 0, outputStat.ctimeMs || 0);
+        const inputUpdatedMs = Math.max(inputStat.birthtimeMs || 0, inputStat.ctimeMs || 0, inputStat.mtimeMs || 0);
+        if (outputCreatedMs > inputUpdatedMs) return true;
     } catch {}
     return false;
 }

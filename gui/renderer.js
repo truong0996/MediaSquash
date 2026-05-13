@@ -86,6 +86,11 @@ function connectSSE() {
         updateFileStatus(data.index, 'completed', { savings: data.savings });
     });
 
+    eventSource.addEventListener('file-skipped', (e) => {
+        const data = JSON.parse(e.data);
+        updateFileStatus(data.index, 'skipped', { savings: data.sizeSaved });
+    });
+
     eventSource.addEventListener('file-error', (e) => {
         const data = JSON.parse(e.data);
         updateFileStatus(data.index, 'failed');
@@ -275,10 +280,30 @@ function updateFileStatus(index, status, extras = {}) {
     const fileRow = document.getElementById(`file-${index}`);
     if (!fileRow) return;
 
-    const progressBar = fileRow.querySelector('.mini-progress-bar');
     const colProgress = fileRow.querySelector('.col-progress');
+    const ensureProgressBar = () => {
+        let progressBar = fileRow.querySelector('.mini-progress-bar');
+        if (!progressBar) {
+            colProgress.innerHTML = `
+                <div class="mini-progress-track">
+                    <div class="mini-progress-bar" style="width: 0%"></div>
+                </div>
+            `;
+            progressBar = fileRow.querySelector('.mini-progress-bar');
+        }
+        return progressBar;
+    };
+
+    if (status === 'pending') {
+        const progressBar = ensureProgressBar();
+        fileRow.classList.remove('processing-active');
+        progressBar.style.width = '0%';
+        progressBar.style.background = '';
+        return;
+    }
 
     if (status === 'processing') {
+        const progressBar = ensureProgressBar();
         fileRow.classList.add('processing-active');
         if (extras.progress !== undefined) {
             progressBar.style.width = `${extras.progress}%`;
@@ -288,12 +313,19 @@ function updateFileStatus(index, status, extras = {}) {
     }
 
     if (status === 'completed') {
+        const progressBar = ensureProgressBar();
         progressBar.style.width = '100%';
         // Replace progress bar with savings text
         if (extras.savings) {
             colProgress.innerHTML = `<span class="file-savings" style="color: var(--accent-success); font-weight: 600;">✓ ${extras.savings}</span>`;
         }
+    } else if (status === 'skipped') {
+        const savedText = typeof extras.savings === 'number'
+            ? `${formatBytes(extras.savings)} saved`
+            : extras.savings;
+        colProgress.innerHTML = `<span class="file-savings" style="color: var(--text-secondary); font-weight: 600;">Skipped${savedText ? ` (${savedText})` : ''}</span>`;
     } else if (status === 'failed') {
+        const progressBar = ensureProgressBar();
         progressBar.style.background = 'var(--accent-danger)';
         progressBar.style.width = '100%';
     }

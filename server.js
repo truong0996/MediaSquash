@@ -169,6 +169,8 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
     console.log(`⚡ Dynamic concurrency: ${IMAGE_CONCURRENCY} images, ${VIDEO_CONCURRENCY} videos`);
     console.log(`   CPU: ${cpuCount} cores | RAM: ${memGB}GB free | Video workers: ${VIDEO_CONCURRENCY}`);
 
+    const reservedOutputPaths = new Set();
+
     // Check for low memory warning
     if (isLowMemory()) {
         console.log(`   ⚠️  LOW MEMORY WARNING - reduced concurrency`);
@@ -245,15 +247,34 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             outputPath = path.join(outputFolder, relativeDir, newFilename);
         }
 
-        // Handle duplicate filenames by adding counter
-        if (fs.existsSync(outputPath)) {
-            let counter = 1;
-            const baseNoExt = newFilename.slice(0, -outputExt.length);
-            while (fs.existsSync(outputPath)) {
-                const uniqueName = `${baseNoExt}_${counter}${outputExt}`;
-                outputPath = path.join(path.dirname(outputPath), uniqueName);
-                counter++;
+        const originalSize = fs.statSync(file.path).size;
+        const baseOutputPath = outputPath;
+        const baseNoExt = newFilename.slice(0, -outputExt.length);
+        let counter = 0;
+
+        while (true) {
+            const candidatePath = counter === 0
+                ? baseOutputPath
+                : path.join(path.dirname(baseOutputPath), `${baseNoExt}_${counter}${outputExt}`);
+
+            if (!reservedOutputPaths.has(candidatePath) && !renameOnly && isAlreadyProcessed(file.path, candidatePath)) {
+                reservedOutputPaths.add(candidatePath);
+                compressionState.processed++;
+                compressionState.results.success++;
+                const outputStat = fs.statSync(candidatePath);
+                compressionState.results.totalOriginal += originalSize;
+                compressionState.results.totalCompressed += outputStat.size;
+                sendSSE('file-skipped', { index, name: file.name, sizeSaved: originalSize - outputStat.size });
+                return;
             }
+
+            if (!reservedOutputPaths.has(candidatePath) && !fs.existsSync(candidatePath)) {
+                outputPath = candidatePath;
+                reservedOutputPaths.add(outputPath);
+                break;
+            }
+
+            counter++;
         }
 
         // Ensure parent directory exists
@@ -262,25 +283,10 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             fs.mkdirSync(parentDir, { recursive: true });
         }
 
-        // Check if already processed (skip if output exists and is newer)
-        const options = { flatten, renameOnly, categoryByYear, categoryByMonth };
-        const shouldSkip = !renameOnly && isAlreadyProcessed(file.path, outputPath);
-
-        if (shouldSkip) {
-            compressionState.processed++;
-            compressionState.results.success++;
-            const outputStat = fs.statSync(outputPath);
-            compressionState.results.totalOriginal += originalSize;
-            compressionState.results.totalCompressed += outputStat.size;
-            sendSSE('file-skipped', { index, name: file.name, sizeSaved: originalSize - outputStat.size });
-            return;
-        }
-
         sendSSE('file-start', { index, name: file.name, type: file.type });
 
         try {
             let result;
-            const originalSize = fs.statSync(file.path).size;
 
             if (renameOnly) {
                 // HEIC/HEIF files must be converted even in renameOnly mode
