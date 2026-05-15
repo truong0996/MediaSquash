@@ -109,7 +109,10 @@ function connectSSE() {
         finishCompression();
     });
 
-    eventSource.addEventListener('cancelled', () => {
+    eventSource.addEventListener('cancelled', (e) => {
+        const data = JSON.parse(e.data);
+        $('progress-text').textContent = 'Cancelled';
+        $('progress-bar').style.width = '0%';
         finishCompression();
     });
 }
@@ -433,9 +436,6 @@ function showSummary(results) {
         const percent = ((savedBytes / originalBytes) * 100).toFixed(1);
         savedText += ` (${percent}%)`;
     }
-
-    $('stat-saved').textContent = savedText;
-    $('stat-time').textContent = formatDuration(results.duration || 0);
 
     $('stat-saved').textContent = savedText;
     $('stat-time').textContent = formatDuration(results.duration || 0);

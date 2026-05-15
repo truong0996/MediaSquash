@@ -347,12 +347,12 @@ function findJsonSidecar(filePath) {
  * @returns {Promise<Date|null>}
  */
 async function getCaptureDate(filePath) {
-    // Helper: Convert absolute timestamp to "Fake UTC" so that getUTC methods return Local time.
-    // e.g. If local is 19:00 and UTC is 12:00, this shifts 12:00 -> 19:00 (still labeled UTC).
-    // This allows formatDateForFilename to print "1900" using getUTC methods.
-    const toLocalAsUTC = (date) => new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    const cached = getCaptureDateCached(filePath);
+    if (cached) return cached;
 
-    // --- Google Takeout JSON (Has Priority) ---
+    const toLocalAsUTC = (date) => new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    let result = null;
+
     const jsonPath = findJsonSidecar(filePath);
     if (jsonPath) {
         try {
@@ -360,52 +360,44 @@ async function getCaptureDate(filePath) {
             if (jsonContent.photoTakenTime && jsonContent.photoTakenTime.timestamp) {
                 const timestamp = parseInt(jsonContent.photoTakenTime.timestamp, 10) * 1000;
                 if (!isNaN(timestamp)) {
-                    // Google timestamps are real UTC. Shift to local.
-                    return toLocalAsUTC(new Date(timestamp));
+                    result = toLocalAsUTC(new Date(timestamp));
                 }
             }
         } catch (err) {
         }
     }
 
-    // --- IMAGES ---
-    if (isImage(filePath)) {
+    if (!result && isImage(filePath)) {
         try {
             const metadata = await sharp(filePath).metadata();
             if (metadata.exif) {
                 const exif = exifReader(metadata.exif);
                 const exifDate = exif.Photo?.DateTimeOriginal || exif.Image?.DateTime;
                 if (exifDate) {
-                    return new Date(exifDate);
+                    result = new Date(exifDate);
                 }
             }
         } catch (err) {
         }
 
-        try {
-            const stats = fs.statSync(filePath);
-            return toLocalAsUTC(stats.mtime);
-        } catch {
-            return null;
+        if (!result) {
+            try {
+                const stats = fs.statSync(filePath);
+                result = toLocalAsUTC(stats.mtime);
+            } catch {
+            }
         }
     }
 
-    // --- VIDEOS ---
-    if (isVideo(filePath)) {
-        let metadataDate = null;
-        let mtimeDate = null;
-
+    if (!result && isVideo(filePath)) {
         try {
-            metadataDate = await new Promise((resolve) => {
+            result = await new Promise((resolve) => {
                 ffmpeg.ffprobe(filePath, (err, metadata) => {
                     if (err) {
                         resolve(null);
                         return;
                     }
 
-                    // Priority list for video creation time tags
-                    // 1. Apple-specific high-precision tags
-                    // 2. Standard creation_time
                     const tags = metadata.format?.tags || {};
                     const creationTime =
                         tags['com.apple.quicktime.creationdate'] ||
@@ -414,25 +406,10 @@ async function getCaptureDate(filePath) {
                         metadata.streams?.find(s => s.tags?.creation_time)?.tags?.creation_time;
 
                     if (creationTime) {
-                        // Video metadata is almost exclusively stored in UTC (e.g., MP4 spec).
-                        // However, com.apple.quicktime.creationdate often includes an offset (e.g. 2023-10-14T15:30:45+0700).
-                        // Date constructor handles both.
                         const dateObj = new Date(creationTime);
                         if (!isNaN(dateObj.getTime())) {
-                            // If it's a standard UTC string without offset, we shift it to local.
-                            // If it already had an offset, new Date() converted it to local machine time.
-                            // But we want "Fake UTC" for formatDateForFilename.
-
-                            // Check if the source string had an offset
                             const hasOffset = creationTime.includes('+') || (creationTime.match(/-/g) || []).length > 2;
-
-                            if (hasOffset) {
-                                // Already local time in dateObj, just shift to Fake UTC
-                                resolve(toLocalAsUTC(dateObj));
-                            } else {
-                                // Likely UTC (Z or no offset), shift to local
-                                resolve(toLocalAsUTC(dateObj));
-                            }
+                            resolve(toLocalAsUTC(dateObj));
                             return;
                         }
                     }
@@ -442,9 +419,7 @@ async function getCaptureDate(filePath) {
         } catch {
         }
 
-        // --- SIBLING FALLBACK (For Live Photos) ---
-        // If metadata extraction failed, check for a companion image file (HEIC or JPG)
-        if (!metadataDate) {
+        if (!result) {
             const dir = path.dirname(filePath);
             const ext = path.extname(filePath);
             const baseName = path.basename(filePath, ext);
@@ -453,33 +428,26 @@ async function getCaptureDate(filePath) {
             for (const imgExt of imageCandidates) {
                 const siblingPath = path.join(dir, baseName + imgExt);
                 if (fs.existsSync(siblingPath)) {
-                    // Try to get date from sibling image
                     const siblingDate = await getCaptureDate(siblingPath);
                     if (siblingDate) {
-                        metadataDate = siblingDate;
+                        result = siblingDate;
                         break;
                     }
                 }
             }
         }
 
-        try {
-            const stats = fs.statSync(filePath);
-            mtimeDate = toLocalAsUTC(stats.mtime);
-        } catch {
+        if (!result) {
+            try {
+                const stats = fs.statSync(filePath);
+                result = toLocalAsUTC(stats.mtime);
+            } catch {
+            }
         }
-
-        // Use Metadata if available (shifted to local), otherwise file system mtime
-        if (metadataDate) {
-            return metadataDate;
-        } else if (mtimeDate) {
-            return mtimeDate;
-        }
-
-        return null;
     }
 
-    return null;
+    setCaptureDateCached(filePath, result);
+    return result;
 }
 
 function formatDateForFilename(date) {

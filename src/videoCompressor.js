@@ -95,9 +95,6 @@ async function compressVideo(inputPath, outputPath, options = {}) {
                 }
             })
             .on('end', () => {
-                // Clean up command to free memory
-                ffmpegCommand.kill();
-
                 let compressedSize = getFileSize(outputPath);
                 let note = '';
 

@@ -265,6 +265,11 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
                 compressionState.results.totalOriginal += originalSize;
                 compressionState.results.totalCompressed += outputStat.size;
                 sendSSE('file-skipped', { index, name: file.name, sizeSaved: originalSize - outputStat.size });
+                sendSSE('overall-progress', {
+                    processed: compressionState.processed,
+                    total: compressionState.total,
+                    percent: (compressionState.processed / compressionState.total) * 100
+                });
                 return;
             }
 
@@ -448,7 +453,11 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
     compressionState.results.duration = (compressionState.results.endTime - compressionState.results.startTime) / 1000;
     compressionState.results.totalSaved = compressionState.results.totalOriginal - compressionState.results.totalCompressed;
 
-    sendSSE('complete', compressionState.results);
+    if (compressionState.shouldCancel) {
+        sendSSE('cancelled', compressionState.results);
+    } else {
+        sendSSE('complete', compressionState.results);
+    }
     compressionState.isRunning = false;
 }
 
