@@ -6,6 +6,8 @@ let files = [];
 let isCompressing = false;
 let availableEncoders = { nvenc: false, qsv: false, cpu: true };
 let eventSource = null;
+let presets = [];
+let performanceInterval = null;
 
 // ============ DOM Elements ============
 const $ = (id) => document.getElementById(id);
@@ -14,11 +16,7 @@ const $ = (id) => document.getElementById(id);
 async function init() {
     console.log('Initializing GUI...');
 
-    // Titlebar is now used for theme toggle, so we keep it visible
-    // const titlebar = document.querySelector('.titlebar');
-    // if (titlebar) titlebar.style.display = 'none';
-
-    // Folder selection - using text input for path
+    // Folder selection
     $('btn-input-browse').onclick = async () => await promptForPath('input');
     $('btn-output-browse').onclick = async () => await promptForPath('output');
 
@@ -51,19 +49,96 @@ async function init() {
     // Modal Interaction
     $('btn-close-modal').onclick = closeModal;
     $('btn-modal-ok').onclick = closeModal;
+    $('btn-view-failed').onclick = () => { closeModal(); showFailedFiles(); };
 
     // Click outside to close
     $('summary-modal').addEventListener('click', (e) => {
-        if (e.target.id === 'summary-modal') {
-            closeModal();
-        }
+        if (e.target.id === 'summary-modal') closeModal();
     });
 
-    // Category by Year toggle logic - REMOVED (Month is now independent)
-    // const yearCheckbox = $('category-by-year');
-    // const monthCheckbox = $('category-by-month');
+    // Preview modal
+    $('btn-close-preview').onclick = closePreview;
+    $('preview-slider').oninput = updatePreviewSlider;
+
+    // Retry failed
+    $('btn-retry-failed').onclick = retryFailedFiles;
+
+    // Presets
+    $('btn-save-preset').onclick = savePreset;
+    $('preset-select').onchange = loadPreset;
+
+    // Drag and drop
+    setupDragAndDrop();
+
+    // Load presets
+    await loadPresetsFromServer();
+
+    // Check for resumable job
+    await checkResumableJob();
+
+    // Start performance metrics
+    startPerformanceMetrics();
 
     console.log('GUI initialized');
+}
+
+// ============ Drag and Drop ============
+function setupDragAndDrop() {
+    const dropZone = $('drop-zone');
+    const overlay = $('drop-overlay');
+
+    if (!dropZone) return;
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            overlay.style.display = 'flex';
+            dropZone.style.borderColor = 'var(--accent-purple)';
+        });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            overlay.style.display = 'none';
+            dropZone.style.borderColor = '';
+        });
+    });
+
+    dropZone.addEventListener('drop', async (e) => {
+        const items = e.dataTransfer.items;
+        for (const item of items) {
+            if (item.kind === 'file') {
+                const path = item.getAsFileSystemHandle?.()?.name;
+                if (path) {
+                    $('input-folder').value = path;
+                    if (!$('output-folder').value) {
+                        $('output-folder').value = path + '\\compressed';
+                    }
+                    updateStartButton();
+                    break;
+                }
+            }
+        }
+
+        // Fallback: try to get path from data
+        const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list');
+        if (text) {
+            let cleanPath = text.replace(/^file:\/\/\/?/, '').replace(/\r?\n$/, '');
+            if (cleanPath) {
+                $('input-folder').value = cleanPath;
+                if (!$('output-folder').value) {
+                    $('output-folder').value = cleanPath + '\\compressed';
+                }
+                updateStartButton();
+            }
+        }
+    });
 }
 
 // ============ SSE Connection ============
@@ -93,7 +168,7 @@ function connectSSE() {
 
     eventSource.addEventListener('file-error', (e) => {
         const data = JSON.parse(e.data);
-        updateFileStatus(data.index, 'failed');
+        updateFileStatus(data.index, 'failed', { error: data.error });
     });
 
     eventSource.addEventListener('overall-progress', (e) => {
@@ -101,25 +176,27 @@ function connectSSE() {
         $('progress-bar').style.width = `${data.percent}%`;
         $('progress-text').textContent = `${data.percent.toFixed(0)}%`;
         $('progress-count').textContent = `${data.processed}/${data.total}`;
+        $('metric-processed').textContent = data.processed;
     });
 
     eventSource.addEventListener('complete', (e) => {
         const data = JSON.parse(e.data);
         showSummary(data);
         finishCompression();
+        updateMetrics();
     });
 
     eventSource.addEventListener('cancelled', () => {
         finishCompression();
     });
 }
+
 // ============ Encoder Detection ============
 async function detectEncoders() {
     try {
         const response = await fetch('/api/encoders');
         availableEncoders = await response.json();
 
-        // Update badges
         $('nvenc-badge').textContent = availableEncoders.nvenc ? 'GPU' : 'N/A';
         $('nvenc-badge').className = 'badge ' + (availableEncoders.nvenc ? 'available' : 'unavailable');
 
@@ -129,7 +206,6 @@ async function detectEncoders() {
         $('qsv-badge').textContent = availableEncoders.qsv ? 'iGPU' : 'N/A';
         $('qsv-badge').className = 'badge ' + (availableEncoders.qsv ? 'available' : 'unavailable');
 
-        // Disable unavailable encoder options
         const disableOption = (id, inputVal, available) => {
             const input = document.querySelector(`input[value="${inputVal}"]`);
             const label = $(id);
@@ -144,16 +220,13 @@ async function detectEncoders() {
         disableOption('encoder-amf-label', 'amf', availableEncoders.amf);
         disableOption('encoder-qsv-label', 'qsv', availableEncoders.qsv);
 
-        // Auto-select the best available encoder
-        let bestEncoder = 'x264'; // Default fallback
+        let bestEncoder = 'x264';
         if (availableEncoders.nvenc) bestEncoder = 'nvenc';
         else if (availableEncoders.amf) bestEncoder = 'amf';
         else if (availableEncoders.qsv) bestEncoder = 'qsv';
 
         const radioToSelect = document.querySelector(`input[value="${bestEncoder}"]`);
-        if (radioToSelect) {
-            radioToSelect.checked = true;
-        }
+        if (radioToSelect) radioToSelect.checked = true;
     } catch (error) {
         console.error('Failed to detect encoders:', error);
     }
@@ -164,15 +237,11 @@ async function promptForPath(type) {
     let newPath = null;
 
     if (window.electronAPI) {
-        // Native dialog
         newPath = await window.electronAPI.selectFolder();
     } else {
-        // Browser fallback
         const currentValue = type === 'input' ? $('input-folder').value : $('output-folder').value;
         newPath = prompt(
-            type === 'input'
-                ? 'Enter input folder path (e.g. D:\\Photos):'
-                : 'Enter output folder path:',
+            type === 'input' ? 'Enter input folder path (e.g. D:\\Photos):' : 'Enter output folder path:',
             currentValue
         );
     }
@@ -248,7 +317,7 @@ function renderFileList() {
     fileCount.textContent = `${files.length} files (${imageCount} images, ${videoCount} videos)`;
 
     fileList.innerHTML = files.map((file, index) => `
-        <div class="file-row" id="file-${index}">
+        <div class="file-row" id="file-${index}" data-index="${index}">
             <div class="col-name">
                 <span class="file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
                 <span class="file-name-text" title="${file.name}">${file.name}</span>
@@ -258,6 +327,9 @@ function renderFileList() {
                 <div class="mini-progress-track">
                     <div class="mini-progress-bar" style="width: 0%"></div>
                 </div>
+            </div>
+            <div class="col-actions">
+                <button class="action-btn-sm preview-btn" onclick="previewFile(${index})" title="Preview" style="display: none;">🔍</button>
             </div>
         </div>
     `).join('');
@@ -277,6 +349,9 @@ function updateFileStatus(index, status, extras = {}) {
     if (!files[index]) return;
 
     files[index].status = status;
+    files[index].error = extras.error || files[index].error;
+    files[index].savings = extras.savings || files[index].savings;
+
     const fileRow = document.getElementById(`file-${index}`);
     if (!fileRow) return;
 
@@ -296,7 +371,7 @@ function updateFileStatus(index, status, extras = {}) {
 
     if (status === 'pending') {
         const progressBar = ensureProgressBar();
-        fileRow.classList.remove('processing-active');
+        fileRow.classList.remove('processing-active', 'failed-active');
         progressBar.style.width = '0%';
         progressBar.style.background = '';
         return;
@@ -305,6 +380,7 @@ function updateFileStatus(index, status, extras = {}) {
     if (status === 'processing') {
         const progressBar = ensureProgressBar();
         fileRow.classList.add('processing-active');
+        fileRow.classList.remove('failed-active');
         if (extras.progress !== undefined) {
             progressBar.style.width = `${extras.progress}%`;
         }
@@ -315,19 +391,24 @@ function updateFileStatus(index, status, extras = {}) {
     if (status === 'completed') {
         const progressBar = ensureProgressBar();
         progressBar.style.width = '100%';
-        // Replace progress bar with savings text
         if (extras.savings) {
             colProgress.innerHTML = `<span class="file-savings" style="color: var(--accent-success); font-weight: 600;">✓ ${extras.savings}</span>`;
         }
+
+        // Show preview button for images
+        if (files[index].type === 'image') {
+            const previewBtn = fileRow.querySelector('.preview-btn');
+            if (previewBtn) previewBtn.style.display = 'flex';
+        }
     } else if (status === 'skipped') {
-        const savedText = typeof extras.savings === 'number'
-            ? `${formatBytes(extras.savings)} saved`
-            : extras.savings;
+        const savedText = typeof extras.savings === 'number' ? `${formatBytes(extras.savings)} saved` : extras.savings;
         colProgress.innerHTML = `<span class="file-savings" style="color: var(--text-secondary); font-weight: 600;">Skipped${savedText ? ` (${savedText})` : ''}</span>`;
     } else if (status === 'failed') {
+        fileRow.classList.add('failed-active');
         const progressBar = ensureProgressBar();
         progressBar.style.background = 'var(--accent-danger)';
         progressBar.style.width = '100%';
+        colProgress.innerHTML = `<span class="file-error-text" style="color: var(--accent-danger); font-size: 11px;" title="${extras.error || 'Unknown error'}">✗ Failed</span>`;
     }
 }
 
@@ -358,17 +439,16 @@ async function startCompression() {
     $('btn-start').style.display = 'none';
     $('btn-cancel').style.display = 'inline-flex';
     $('progress-section').style.display = 'block';
-    // Summary is now a modal, no need to hide section manually here as it's not inline.
-    // $('summary-modal').classList.remove('show'); // Optional assurance
+    $('failed-files-section').style.display = 'none';
 
-    // Reset progress
     $('progress-bar').style.width = '0%';
     $('progress-text').textContent = '0%';
     $('progress-count').textContent = `0/${files.length}`;
 
-    // Reset all file statuses
     files.forEach((f, i) => {
         f.status = 'pending';
+        f.error = null;
+        f.savings = null;
         updateFileStatus(i, 'pending');
     });
 
@@ -407,28 +487,88 @@ function finishCompression() {
     isCompressing = false;
     $('btn-start').style.display = 'inline-flex';
     $('btn-cancel').style.display = 'none';
-    // Keep progress section visible if needed, or hide it. 
-    // Usually better to hide it when summary shows.
     $('progress-section').style.display = 'none';
 }
 
+// ============ Failed Files ============
+function showFailedFiles() {
+    const section = $('failed-files-section');
+    const list = $('failed-files-list');
+
+    const failedFiles = files.filter(f => f.status === 'failed');
+    if (failedFiles.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+    list.innerHTML = failedFiles.map((file, idx) => `
+        <div class="failed-file-row">
+            <span class="failed-file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
+            <span class="failed-file-name" title="${file.path}">${file.name}</span>
+            <span class="failed-file-error" title="${file.error || 'Unknown error'}">${(file.error || 'Unknown error').substring(0, 50)}${(file.error || '').length > 50 ? '...' : ''}</span>
+        </div>
+    `).join('');
+}
+
+async function retryFailedFiles() {
+    const failedFiles = files.filter(f => f.status === 'failed');
+    if (failedFiles.length === 0) return;
+
+    isCompressing = true;
+    $('btn-start').style.display = 'none';
+    $('btn-cancel').style.display = 'inline-flex';
+    $('progress-section').style.display = 'block';
+    $('failed-files-section').style.display = 'none';
+
+    $('progress-bar').style.width = '0%';
+    $('progress-text').textContent = '0%';
+    $('progress-count').textContent = `0/${failedFiles.length}`;
+
+    const encoder = document.querySelector('input[name="encoder"]:checked').value;
+
+    try {
+        const response = await fetch('/api/retry-failed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                failedFiles: failedFiles,
+                outputFolder: $('output-folder').value,
+                inputFolder: $('input-folder').value,
+                encoder: encoder,
+                imageFormat: document.querySelector('input[name="image-format"]:checked').value,
+                quality: $('quality-slider').value,
+                crf: $('crf-slider').value,
+                flatten: $('flatten-output').checked,
+                renameOnly: $('rename-only').checked,
+                categoryByYear: $('category-by-year').checked,
+                categoryByMonth: $('category-by-month').checked
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Retry failed');
+        }
+    } catch (error) {
+        alert('Error retrying files: ' + error.message);
+        finishCompression();
+    }
+}
+
+// ============ Summary ============
 function showSummary(results) {
     const modal = $('summary-modal');
-    // Show modal
     modal.style.display = 'flex';
-    // Trigger reflow to enable transition
     modal.offsetHeight;
     modal.classList.add('show');
 
-    // Hide progress bar on main UI
     $('progress-section').style.display = 'none';
 
     const savedBytes = results.totalSaved || 0;
-    const originalBytes = results.totalOriginal || 1; // Prevent div by zero
+    const originalBytes = results.totalOriginal || 1;
 
     let savedText = formatBytes(savedBytes);
-
-    // Only calculate percentage if we actually compressed something
     if (results.totalOriginal > 0) {
         const percent = ((savedBytes / originalBytes) * 100).toFixed(1);
         savedText += ` (${percent}%)`;
@@ -437,40 +577,32 @@ function showSummary(results) {
     $('stat-saved').textContent = savedText;
     $('stat-time').textContent = formatDuration(results.duration || 0);
 
-    $('stat-saved').textContent = savedText;
-    $('stat-time').textContent = formatDuration(results.duration || 0);
-
-    // Determine what to show in "Encoder" field
     const fileType = document.querySelector('input[name="file-type"]:checked').value;
     let encoderText = '-';
 
     if (fileType === 'image') {
-        const fmt = document.querySelector('input[name="image-format"]:checked').value;
-        encoderText = fmt.toUpperCase();
-        // Update label to say "Format" instead of "Encoder"? 
-        // Or just leave "Encoder" as generic term. "Format" is better contextually.
-        // Let's stick to the text update for now, maybe change header dynamically if possible?
-        // Changing header text requires selecting the sibling label.
-        // Simple fix: Show "WEBP" / "JPEG"
+        encoderText = document.querySelector('input[name="image-format"]:checked').value.toUpperCase();
     } else if (fileType === 'video') {
-        const enc = document.querySelector('input[name="encoder"]:checked').value;
-        encoderText = enc.toUpperCase();
+        encoderText = document.querySelector('input[name="encoder"]:checked').value.toUpperCase();
     } else {
-        // "ALL" mode
         encoderText = 'MIXED';
-        // Or show both? "NVENC / WEBP"?
-        // Let's keep it simple: "Mixed" or check what counts were.
-        // Ideally we'd know count of images vs videos.
-        // For now "Mixed" is safe.
     }
 
-    // Optional: dynamically change label from "Encoder" to "Format"
     const encoderLabel = document.querySelector('.summary-item:last-child .summary-label');
     if (encoderLabel) {
         encoderLabel.textContent = fileType === 'image' ? 'Format' : 'Encoder';
     }
 
     $('stat-encoder').textContent = encoderText;
+    $('stat-failed').textContent = results.failedCount || 0;
+
+    const viewFailedBtn = $('btn-view-failed');
+    if (results.failedCount > 0) {
+        viewFailedBtn.style.display = 'inline-flex';
+        showFailedFiles();
+    } else {
+        viewFailedBtn.style.display = 'none';
+    }
 }
 
 function closeModal() {
@@ -479,16 +611,213 @@ function closeModal() {
     setTimeout(() => {
         modal.style.display = 'none';
         $('btn-start').style.display = 'inline-flex';
-        // Reset progress bar if desired, or keep it until next scan?
-        // For now, allow start button to appear again
-    }, 300); // Match CSS transition duration
+    }, 300);
 }
 
+// ============ Before/After Preview ============
+async function previewFile(index) {
+    const file = files[index];
+    if (!file || file.type !== 'image' || file.status !== 'completed') return;
+
+    const modal = $('preview-modal');
+    $('preview-filename').textContent = file.name;
+    $('preview-original').src = `file://${file.path}`;
+    $('preview-original-size').textContent = file.sizeFormatted;
+
+    const outputFolder = $('output-folder').value;
+    const imageFormat = document.querySelector('input[name="image-format"]:checked').value;
+    const ext = imageFormat.startsWith('.') ? imageFormat : `.${imageFormat}`;
+    const baseName = file.name.replace(/\.[^.]+$/, '');
+    const compressedPath = `${outputFolder}\\${baseName}${ext}`;
+
+    $('preview-compressed').src = `file://${compressedPath}`;
+    $('preview-compressed-size').textContent = 'Loading...';
+
+    try {
+        const stat = await fetch(`/api/file-stat?path=${encodeURIComponent(compressedPath)}`);
+        if (stat.ok) {
+            const data = await stat.json();
+            $('preview-compressed-size').textContent = data.sizeFormatted;
+            const savings = ((file.size - data.size) / file.size * 100).toFixed(1);
+            $('preview-savings').textContent = `Saved: ${savings}% (${formatBytes(file.size - data.size)})`;
+        }
+    } catch {
+        $('preview-compressed-size').textContent = 'N/A';
+        $('preview-savings').textContent = '';
+    }
+
+    $('preview-slider').value = 50;
+    updatePreviewSlider();
+
+    modal.style.display = 'flex';
+    modal.offsetHeight;
+    modal.classList.add('show');
+}
+
+function closePreview() {
+    const modal = $('preview-modal');
+    modal.classList.remove('show');
+    setTimeout(() => {
+        modal.style.display = 'none';
+    }, 300);
+}
+
+function updatePreviewSlider() {
+    const slider = $('preview-slider');
+    const value = slider.value;
+    slider.style.background = `linear-gradient(to right, var(--accent-purple) 0%, var(--accent-purple) ${value}%, rgba(255,255,255,0.1) ${value}%, rgba(255,255,255,0.1) 100%)`;
+}
+
+// ============ Presets ============
+async function loadPresetsFromServer() {
+    try {
+        const response = await fetch('/api/presets');
+        presets = await response.json();
+        renderPresetSelector();
+    } catch (error) {
+        console.error('Failed to load presets:', error);
+    }
+}
+
+function renderPresetSelector() {
+    const select = $('preset-select');
+    select.innerHTML = '<option value="">Custom</option>';
+    presets.forEach(preset => {
+        const option = document.createElement('option');
+        option.value = preset.name;
+        option.textContent = preset.name;
+        select.appendChild(option);
+    });
+}
+
+async function savePreset() {
+    const name = prompt('Enter preset name:');
+    if (!name) return;
+
+    const settings = {
+        imageFormat: document.querySelector('input[name="image-format"]:checked').value,
+        quality: $('quality-slider').value,
+        encoder: document.querySelector('input[name="encoder"]:checked').value,
+        crf: $('crf-slider').value,
+        recursive: $('recursive-scan').checked,
+        flatten: $('flatten-output').checked,
+        renameOnly: $('rename-only').checked,
+        categoryByYear: $('category-by-year').checked,
+        categoryByMonth: $('category-by-month').checked
+    };
+
+    try {
+        const response = await fetch('/api/presets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, settings })
+        });
+
+        if (response.ok) {
+            await loadPresetsFromServer();
+            alert('Preset saved!');
+        } else {
+            const error = await response.json();
+            alert('Failed to save preset: ' + error.error);
+        }
+    } catch (error) {
+        alert('Error saving preset: ' + error.message);
+    }
+}
+
+async function loadPreset() {
+    const name = $('preset-select').value;
+    if (!name) return;
+
+    const preset = presets.find(p => p.name === name);
+    if (!preset) return;
+
+    const settings = preset.settings;
+
+    const formatRadio = document.querySelector(`input[name="image-format"][value="${settings.imageFormat}"]`);
+    if (formatRadio) formatRadio.checked = true;
+
+    $('quality-slider').value = settings.quality;
+    $('quality-value').textContent = settings.quality;
+
+    const encoderRadio = document.querySelector(`input[name="encoder"][value="${settings.encoder}"]`);
+    if (encoderRadio) encoderRadio.checked = true;
+
+    $('crf-slider').value = settings.crf;
+    $('crf-value').textContent = settings.crf;
+
+    $('recursive-scan').checked = settings.recursive;
+    $('flatten-output').checked = settings.flatten;
+    $('rename-only').checked = settings.renameOnly;
+    $('category-by-year').checked = settings.categoryByYear;
+    $('category-by-month').checked = settings.categoryByMonth;
+}
+
+// ============ Job Resume ============
+async function checkResumableJob() {
+    try {
+        const response = await fetch('/api/job-state');
+        const state = await response.json();
+
+        if (state.hasJob && state.pendingFiles?.length > 0) {
+            const pending = state.pendingFiles.length;
+            const total = state.files?.length || pending;
+            const completed = total - pending;
+
+            const resume = confirm(`Found interrupted job: ${completed}/${total} files processed.\n\nWould you like to resume processing the remaining ${pending} files?`);
+            if (resume) {
+                await resumeJob();
+            } else {
+                await fetch('/api/job-state/clear', { method: 'POST' });
+            }
+        }
+    } catch (error) {
+        console.error('Failed to check job state:', error);
+    }
+}
+
+async function resumeJob() {
+    try {
+        const response = await fetch('/api/job-state/resume', { method: 'POST' });
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Resume failed');
+        }
+
+        isCompressing = true;
+        $('btn-start').style.display = 'none';
+        $('btn-cancel').style.display = 'inline-flex';
+        $('progress-section').style.display = 'block';
+    } catch (error) {
+        alert('Error resuming job: ' + error.message);
+    }
+}
+
+// ============ Performance Metrics ============
+function startPerformanceMetrics() {
+    updateMetrics();
+    performanceInterval = setInterval(updateMetrics, 5000);
+}
+
+async function updateMetrics() {
+    try {
+        const response = await fetch('/api/metrics');
+        const metrics = await response.json();
+
+        $('metric-memory').textContent = metrics.memory.heapUsed;
+        $('metric-processed').textContent = metrics.compressionState.processed;
+        $('metric-failed').textContent = metrics.compressionState.failed;
+        $('metrics-uptime').textContent = `Uptime: ${formatDuration(metrics.uptime)}`;
+    } catch {
+    }
+}
+
+// ============ Utilities ============
 function formatBytes(bytes) {
     if (isNaN(bytes) || bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k)); // Use Math.abs for negative savings
+    const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + (sizes[i] || 'B');
 }
 
@@ -517,20 +846,16 @@ const THEME_ICONS = {
 };
 
 function initTheme() {
-    // 1. Get stored preference
     const stored = localStorage.getItem('mediaSquashTheme');
     if (stored && THEME_ORDER.includes(stored)) currentTheme = stored;
 
-    // 2. Bind click event to single button
     const btn = $('theme-toggle-btn');
     if (btn) {
         btn.onclick = cycleTheme;
     }
 
-    // 3. Initial application
     setTheme(currentTheme);
 
-    // 4. Listen for system changes
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
         if (currentTheme === 'system') {
             applyTheme(e.matches ? 'dark' : 'light');
@@ -548,14 +873,12 @@ function setTheme(mode) {
     currentTheme = mode;
     localStorage.setItem('mediaSquashTheme', mode);
 
-    // Update button icon
     const btn = $('theme-toggle-btn');
     if (btn) {
         btn.textContent = THEME_ICONS[mode];
         btn.title = `Current: ${mode.charAt(0).toUpperCase() + mode.slice(1)} (Click to switch)`;
     }
 
-    // Apply logic
     if (mode === 'system') {
         const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         applyTheme(isDark ? 'dark' : 'light');

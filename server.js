@@ -6,6 +6,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const logger = require('./src/logger');
 
 // Import compression modules
 const { compressImage } = require('./src/imageCompressor');
@@ -13,7 +14,7 @@ const { compressVideo, detectAvailableEncoders, getAdaptiveCrf, getVideoInfo } =
 const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename, normalizeOutputExtension, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, validateQuality, validateCrf, validateImageFormat, validateEncoder, clearCaptureDateCache, setCaptureDateCached, getCaptureDateCached, getAvailableMemory, getRecommendedVideoConcurrency, isLowMemory, isAlreadyProcessed } = require('./src/utils');
 
 const app = express();
-const PORT = process.env.PORT || 3847;
+const BASE_PORT = process.env.PORT || 3847;
 
 // Middleware
 app.use(express.json({ limit: '50mb' })); // Increased limit for large file lists
@@ -27,8 +28,43 @@ let compressionState = {
     progress: 0,
     processed: 0,
     total: 0,
-    results: null
+    results: null,
+    failedFiles: []
 };
+
+// Job resume state
+const JOB_STATE_FILE = path.join(__dirname, 'tmp_review', 'job-state.json');
+
+function saveJobState(state) {
+    try {
+        const dir = path.dirname(JOB_STATE_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(JOB_STATE_FILE, JSON.stringify(state, null, 2));
+    } catch (err) {
+        logger.warn('Failed to save job state:', err.message);
+    }
+}
+
+function loadJobState() {
+    try {
+        if (fs.existsSync(JOB_STATE_FILE)) {
+            return JSON.parse(fs.readFileSync(JOB_STATE_FILE, 'utf8'));
+        }
+    } catch (err) {
+        logger.warn('Failed to load job state:', err.message);
+    }
+    return null;
+}
+
+function clearJobState() {
+    try {
+        if (fs.existsSync(JOB_STATE_FILE)) {
+            fs.unlinkSync(JOB_STATE_FILE);
+        }
+    } catch (err) {
+        logger.warn('Failed to clear job state:', err.message);
+    }
+}
 
 // SSE clients for real-time updates
 let sseClients = [];
@@ -126,7 +162,25 @@ app.post('/api/compress', async (req, res) => {
     // Clear cache and start compression
     clearCaptureDateCache();
 
-    // Start compression in background
+    // Save job state for resume
+    saveJobState({
+        hasJob: true,
+        startedAt: new Date().toISOString(),
+        files,
+        pendingFiles: files,
+        outputFolder,
+        inputFolder,
+        encoder,
+        imageFormat,
+        quality,
+        crf,
+        flatten,
+        renameOnly,
+        categoryByYear,
+        categoryByMonth
+    });
+
+    // Start compression
     compressionState = {
         isRunning: true,
         shouldCancel: false,
@@ -134,6 +188,7 @@ app.post('/api/compress', async (req, res) => {
         progress: 0,
         processed: 0,
         total: files.length,
+        failedFiles: [],
         results: {
             success: 0,
             failed: 0,
@@ -362,7 +417,19 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
                     setFileMetadata(file.path, outputPath);
                 } catch { }
             }
-            sendSSE('file-error', { index, error: error.message || 'Unknown error' });
+            sendSSE('file-error', { index, error: error.message || 'Unknown error', file: file.name, path: file.path });
+
+            // Track failed file for retry
+            compressionState.failedFiles.push({
+                path: file.path,
+                name: file.name,
+                type: file.type,
+                size: file.size,
+                sizeFormatted: file.sizeFormatted,
+                error: error.message || 'Unknown error',
+                index
+            });
+
             return { success: false };
         }
     }
@@ -447,6 +514,10 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
     compressionState.results.endTime = Date.now();
     compressionState.results.duration = (compressionState.results.endTime - compressionState.results.startTime) / 1000;
     compressionState.results.totalSaved = compressionState.results.totalOriginal - compressionState.results.totalCompressed;
+    compressionState.results.failedCount = compressionState.failedFiles.length;
+
+    // Clear job state on completion
+    clearJobState();
 
     sendSSE('complete', compressionState.results);
     compressionState.isRunning = false;
@@ -456,6 +527,145 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
 app.post('/api/cancel', (req, res) => {
     compressionState.shouldCancel = true;
     res.json({ status: 'cancelling' });
+});
+
+// Get failed files
+app.get('/api/failed-files', (req, res) => {
+    res.json({ failedFiles: compressionState.failedFiles || [] });
+});
+
+// Retry failed files
+app.post('/api/retry-failed', async (req, res) => {
+    if (compressionState.isRunning) {
+        return res.status(400).json({ error: 'Compression already in progress' });
+    }
+
+    const { failedFiles, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth } = req.body;
+
+    if (!failedFiles || failedFiles.length === 0) {
+        return res.status(400).json({ error: 'No files to retry' });
+    }
+
+    compressionState.failedFiles = [];
+    res.json({ status: 'retry-started', total: failedFiles.length });
+
+    processFiles(failedFiles, outputFolder, inputFolder, encoder, imageFormat, parseInt(quality), parseInt(crf), flatten, renameOnly, categoryByYear, categoryByMonth);
+});
+
+// Save preset
+app.post('/api/presets', (req, res) => {
+    const { name, settings } = req.body;
+    if (!name || !settings) {
+        return res.status(400).json({ error: 'Name and settings required' });
+    }
+
+    const presetsDir = path.join(__dirname, 'presets');
+    if (!fs.existsSync(presetsDir)) fs.mkdirSync(presetsDir, { recursive: true });
+
+    const presetPath = path.join(presetsDir, `${name.replace(/[^a-z0-9]/gi, '_')}.json`);
+    fs.writeFileSync(presetPath, JSON.stringify({ name, settings, createdAt: new Date().toISOString() }, null, 2));
+    res.json({ status: 'saved', path: presetPath });
+});
+
+// Load all presets
+app.get('/api/presets', (req, res) => {
+    const presetsDir = path.join(__dirname, 'presets');
+    if (!fs.existsSync(presetsDir)) {
+        return res.json([]);
+    }
+
+    const presets = fs.readdirSync(presetsDir)
+        .filter(f => f.endsWith('.json'))
+        .map(f => {
+            try {
+                return JSON.parse(fs.readFileSync(path.join(presetsDir, f), 'utf8'));
+            } catch {
+                return null;
+            }
+        })
+        .filter(Boolean);
+
+    res.json(presets);
+});
+
+// Delete preset
+app.delete('/api/presets/:name', (req, res) => {
+    const presetsDir = path.join(__dirname, 'presets');
+    const presetPath = path.join(presetsDir, `${req.params.name.replace(/[^a-z0-9]/gi, '_')}.json`);
+
+    if (fs.existsSync(presetPath)) {
+        fs.unlinkSync(presetPath);
+        res.json({ status: 'deleted' });
+    } else {
+        res.status(404).json({ error: 'Preset not found' });
+    }
+});
+
+// Get job state for resume
+app.get('/api/job-state', (req, res) => {
+    const state = loadJobState();
+    res.json(state || { hasJob: false });
+});
+
+// Clear job state
+app.post('/api/job-state/clear', (req, res) => {
+    clearJobState();
+    res.json({ status: 'cleared' });
+});
+
+// Resume job
+app.post('/api/job-state/resume', async (req, res) => {
+    const state = loadJobState();
+    if (!state || !state.pendingFiles || state.pendingFiles.length === 0) {
+        return res.status(400).json({ error: 'No resumable job found' });
+    }
+
+    if (compressionState.isRunning) {
+        return res.status(400).json({ error: 'Compression already in progress' });
+    }
+
+    compressionState.failedFiles = [];
+    res.json({ status: 'resumed', total: state.pendingFiles.length });
+
+    processFiles(state.pendingFiles, state.outputFolder, state.inputFolder, state.encoder, state.imageFormat, state.quality, state.crf, state.flatten, state.renameOnly, state.categoryByYear, state.categoryByMonth);
+});
+
+// Performance metrics
+app.get('/api/metrics', (req, res) => {
+    const memUsage = process.memoryUsage();
+    res.json({
+        uptime: process.uptime(),
+        memory: {
+            rss: formatFileSize(memUsage.rss),
+            heapUsed: formatFileSize(memUsage.heapUsed),
+            heapTotal: formatFileSize(memUsage.heapTotal)
+        },
+        compressionState: {
+            isRunning: compressionState.isRunning,
+            processed: compressionState.processed,
+            total: compressionState.total,
+            failed: compressionState.failedFiles?.length || 0
+        }
+    });
+});
+
+// Get file stat for preview
+app.get('/api/file-stat', (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath) {
+        return res.status(400).json({ error: 'Path required' });
+    }
+
+    try {
+        const stats = fs.statSync(filePath);
+        res.json({
+            size: stats.size,
+            sizeFormatted: formatFileSize(stats.size),
+            mtime: stats.mtime
+        });
+    } catch {
+        res.status(404).json({ error: 'File not found' });
+    }
 });
 
 // Get current status
@@ -484,26 +694,59 @@ app.get('/api/events', (req, res) => {
 });
 
 // ============ Start Server ============
-const startServer = async () => {
-    return new Promise((resolve) => {
-        const server = app.listen(PORT, async () => {
-            console.log(`\n🗜️  Media Compressor GUI`);
-            console.log(`   Server running at: http://localhost:${PORT}`);
+function findAvailablePort(startPort, maxAttempts = 10) {
+    return new Promise((resolve, reject) => {
+        const net = require('net');
+        let currentPort = startPort;
+        let attempts = 0;
 
-            if (process.env.ELECTRON_APP) {
-                console.log('   Running in Electron mode');
-            } else {
-                console.log(`   Press Ctrl+C to stop\n`);
-                // Auto-open browser only if NOT in Electron
-                try {
-                    const open = (await import('open')).default;
-                    await open(`http://localhost:${PORT}`);
-                } catch (err) {
-                    console.log(`   Open http://localhost:${PORT} in your browser`);
+        function tryPort(port) {
+            const server = net.createServer();
+            server.listen(port, () => {
+                server.close();
+                resolve(port);
+            });
+            server.on('error', () => {
+                attempts++;
+                if (attempts >= maxAttempts) {
+                    reject(new Error(`No available port found after ${maxAttempts} attempts`));
+                } else {
+                    currentPort++;
+                    tryPort(currentPort);
                 }
-            }
-            resolve(server);
-        });
+            });
+        }
+
+        tryPort(currentPort);
+    });
+}
+
+const startServer = async () => {
+    return new Promise((resolve, reject) => {
+        findAvailablePort(BASE_PORT)
+            .then((PORT) => {
+                const server = app.listen(PORT, async () => {
+                    logger.info(`\n🗜️  Media Compressor GUI`);
+                    logger.info(`   Server running at: http://localhost:${PORT}`);
+                    if (PORT !== BASE_PORT) {
+                        logger.warn(`   Port ${BASE_PORT} was busy, using port ${PORT} instead`);
+                    }
+
+                    if (process.env.ELECTRON_APP) {
+                        logger.info('   Running in Electron mode');
+                    } else {
+                        logger.info(`   Press Ctrl+C to stop\n`);
+                        try {
+                            const open = (await import('open')).default;
+                            await open(`http://localhost:${PORT}`);
+                        } catch (err) {
+                            logger.info(`   Open http://localhost:${PORT} in your browser`);
+                        }
+                    }
+                    resolve(server);
+                });
+            })
+            .catch(reject);
     });
 };
 

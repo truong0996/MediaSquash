@@ -1,29 +1,18 @@
 const { app, BrowserWindow, shell, dialog, ipcMain } = require('electron');
 const path = require('path');
-const fs = require('fs');
+const logger = require('./src/logger');
 
-// Log to file since console is not visible in packaged app
-const logPath = path.join(path.dirname(process.execPath), 'debug.log');
-function log(msg) {
-    try {
-        const time = new Date().toISOString();
-        fs.appendFileSync(logPath, `[${time}] ${msg}\n`);
-    } catch (e) {
-        // ignore
-    }
-}
-
-log('App starting...');
+logger.info('App starting...');
 
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
-    log('Duplicate instance detected, quitting.');
+    logger.info('Duplicate instance detected, quitting.');
     app.quit();
 }
 
 function createWindow() {
-    log('Creating window...');
+    logger.info('Creating window...');
     const mainWindow = new BrowserWindow({
         width: 1280,
         height: 800,
@@ -37,10 +26,10 @@ function createWindow() {
 
     mainWindow.setMenuBarVisibility(false);
 
-    log('Loading URL...');
+    logger.info('Loading URL...');
     mainWindow.loadURL('http://localhost:3847')
-        .then(() => log('URL loaded successfully'))
-        .catch(err => log('Failed to load URL: ' + err.message));
+        .then(() => logger.info('URL loaded successfully'))
+        .catch(err => logger.error('Failed to load URL: ' + err.message));
 
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
         if (url.startsWith('http:') || url.startsWith('https:')) {
@@ -54,21 +43,21 @@ function createWindow() {
 process.env.ELECTRON_APP = 'true';
 
 try {
-    log('Starting server...');
+    logger.info('Starting server...');
     const startServer = require('./server.js');
     // Start server if it exports a function (Promise)
     if (typeof startServer === 'object' && startServer instanceof Promise) {
         startServer.then(() => {
-            log('Server started successfully');
+            logger.info('Server started successfully');
         }).catch(err => {
-            log('Server failed to start (promise rejected): ' + err.stack);
+            logger.error('Server failed to start (promise rejected): ' + err.stack);
             dialog.showErrorBox('Server Error', 'Failed to start local server: ' + err.message);
         });
     } else {
-        log('Server module required but returned: ' + typeof startServer);
+        logger.warn('Server module required but returned: ' + typeof startServer);
     }
 } catch (e) {
-    log('CRITICAL ERROR requiring server.js: ' + e.stack);
+    logger.error('CRITICAL ERROR requiring server.js: ' + e.stack);
     dialog.showErrorBox('Startup Error', 'Critical error starting server: ' + e.message);
 }
 
@@ -84,7 +73,7 @@ async function handleOpenDialog() {
 }
 
 app.whenReady().then(() => {
-    log('App ready');
+    logger.info('App ready');
     ipcMain.handle('dialog:openDirectory', handleOpenDialog);
     createWindow();
 
@@ -102,6 +91,6 @@ app.on('window-all-closed', () => {
 });
 
 process.on('uncaughtException', (error) => {
-    log('UNCAUGHT EXCEPTION: ' + error.stack);
+    logger.error('UNCAUGHT EXCEPTION: ' + error.stack);
     dialog.showErrorBox('Uncaught Exception', error.message);
 });

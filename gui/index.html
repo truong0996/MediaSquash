@@ -19,7 +19,11 @@
         <button class="theme-btn" id="theme-toggle-btn" title="Theme">💻</button>
 
         <!-- Top Section: Folders -->
-        <div class="glass-panel io-section">
+        <div class="glass-panel io-section" id="drop-zone">
+            <div class="drop-overlay" id="drop-overlay">
+                <span class="drop-icon">📂</span>
+                <span class="drop-text">Drop folders here</span>
+            </div>
             <div class="input-group">
                 <label class="input-label">Source Folder</label>
                 <div class="input-wrapper">
@@ -49,6 +53,15 @@
 
         <!-- Options Bar -->
         <div class="options-bar">
+            <!-- Preset Selector -->
+            <div class="preset-selector">
+                <label class="input-label" style="margin: 0;">Presets:</label>
+                <select id="preset-select" class="preset-select">
+                    <option value="">Custom</option>
+                </select>
+                <button class="btn-icon-inside" id="btn-save-preset" title="Save current settings as preset">💾</button>
+            </div>
+
             <!-- Checkboxes -->
             <label class="checkbox-option">
                 <input type="checkbox" id="recursive-scan">
@@ -204,6 +217,37 @@
             </div>
         </div>
 
+        <!-- Failed Files Section -->
+        <div class="glass-panel failed-files-section" id="failed-files-section" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0 16px 16px;">
+                <span style="font-weight: 600; color: var(--accent-danger); font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">⚠️ Failed Files</span>
+                <button class="btn-retry" id="btn-retry-failed">Retry All</button>
+            </div>
+            <div class="list-body" id="failed-files-list"></div>
+        </div>
+
+        <!-- Performance Metrics Section -->
+        <div class="glass-panel metrics-section" id="metrics-section">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: 600; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">📊 Performance</span>
+                <span id="metrics-uptime" style="font-size: 12px; color: var(--text-muted);"></span>
+            </div>
+            <div class="metrics-grid" id="metrics-grid">
+                <div class="metric-item">
+                    <span class="metric-label">Memory</span>
+                    <span class="metric-value" id="metric-memory">-</span>
+                </div>
+                <div class="metric-item">
+                    <span class="metric-label">Processed</span>
+                    <span class="metric-value" id="metric-processed">0</span>
+                </div>
+                <div class="metric-item">
+                    <span class="metric-label">Failed</span>
+                    <span class="metric-value" id="metric-failed" style="color: var(--accent-danger);">0</span>
+                </div>
+            </div>
+        </div>
+
         <!-- Bottom Actions -->
         <div class="action-area">
             <button class="btn-start" id="btn-start" disabled>
@@ -247,10 +291,43 @@
                     <div class="summary-label">Encoder</div>
                     <div class="summary-value encoder" id="stat-encoder">-</div>
                 </div>
+                <div class="summary-item">
+                    <div class="summary-label">Failed</div>
+                    <div class="summary-value" id="stat-failed" style="color: var(--accent-danger);">0</div>
+                </div>
             </div>
-            <div style="display: flex; justify-content: center; margin-top: 24px;">
-                <button class="btn-start" id="btn-modal-ok"
-                    style="width: auto; padding: 0 40px; height: 44px; font-size: 14px;">OK</button>
+            <div style="display: flex; justify-content: center; gap: 12px; margin-top: 24px;">
+                <button class="btn-start" id="btn-view-failed" style="display: none; background: var(--accent-danger); width: auto; padding: 0 24px; height: 44px; font-size: 14px;">View Failed</button>
+                <button class="btn-start" id="btn-modal-ok" style="width: auto; padding: 0 40px; height: 44px; font-size: 14px;">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Before/After Preview Modal -->
+    <div id="preview-modal" class="modal-overlay">
+        <div class="preview-card modal-content">
+            <button class="modal-close" id="btn-close-preview">×</button>
+            <div class="preview-header">
+                <span>🔍 Before / After Comparison</span>
+                <span id="preview-filename" class="preview-filename"></span>
+            </div>
+            <div class="preview-container">
+                <div class="preview-pane">
+                    <div class="preview-label">Original</div>
+                    <img id="preview-original" alt="Original" />
+                    <div class="preview-size" id="preview-original-size"></div>
+                </div>
+                <div class="preview-divider">
+                    <input type="range" id="preview-slider" min="0" max="100" value="50" class="preview-slider" />
+                </div>
+                <div class="preview-pane">
+                    <div class="preview-label">Compressed</div>
+                    <img id="preview-compressed" alt="Compressed" />
+                    <div class="preview-size" id="preview-compressed-size"></div>
+                </div>
+            </div>
+            <div class="preview-stats">
+                <span id="preview-savings"></span>
             </div>
         </div>
     </div>
@@ -269,6 +346,23 @@
 
         // Ensure initial active state
         document.querySelector('input[name="file-type"]:checked')?.closest('.type-radio')?.classList.add('active');
+
+        // Handle preset tab active state
+        document.querySelectorAll('.preset-tabs input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const parent = e.target.closest('.preset-tabs');
+                parent.querySelectorAll('.tab-option').forEach(label => label.classList.remove('active'));
+                e.target.closest('.tab-option').classList.add('active');
+            });
+        });
+
+        // Ensure initial active state for preset tabs
+        document.querySelectorAll('.preset-tabs').forEach(tabGroup => {
+            const checked = tabGroup.querySelector('input[type="radio"]:checked');
+            if (checked) {
+                checked.closest('.tab-option').classList.add('active');
+            }
+        });
     </script>
 </body>
 
