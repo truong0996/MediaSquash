@@ -186,7 +186,10 @@ function connectSSE() {
         updateMetrics();
     });
 
-    eventSource.addEventListener('cancelled', () => {
+    eventSource.addEventListener('cancelled', (e) => {
+        const data = JSON.parse(e.data);
+        $('progress-text').textContent = 'Cancelled';
+        $('progress-bar').style.width = '0%';
         finishCompression();
     });
 }
@@ -577,6 +580,7 @@ function showSummary(results) {
     $('stat-saved').textContent = savedText;
     $('stat-time').textContent = formatDuration(results.duration || 0);
 
+    // Determine what to show in "Encoder" field
     const fileType = document.querySelector('input[name="file-type"]:checked').value;
     let encoderText = '-';
 

@@ -42,22 +42,26 @@ function createWindow() {
 
 process.env.ELECTRON_APP = 'true';
 
+let serverReady;
+
 try {
     logger.info('Starting server...');
-    const startServer = require('./server.js');
-    // Start server if it exports a function (Promise)
-    if (typeof startServer === 'object' && startServer instanceof Promise) {
-        startServer.then(() => {
+    const serverPromise = require('./server.js');
+    // Start server if it exports a Promise
+    if (typeof serverPromise === 'object' && serverPromise instanceof Promise) {
+        serverReady = serverPromise.then(() => {
             logger.info('Server started successfully');
         }).catch(err => {
             logger.error('Server failed to start (promise rejected): ' + err.stack);
             dialog.showErrorBox('Server Error', 'Failed to start local server: ' + err.message);
         });
     } else {
-        logger.warn('Server module required but returned: ' + typeof startServer);
+        serverReady = Promise.reject(new Error('Server module returned unexpected type: ' + typeof serverPromise));
+        logger.warn('Server module required but returned: ' + typeof serverPromise);
     }
 } catch (e) {
     logger.error('CRITICAL ERROR requiring server.js: ' + e.stack);
+    serverReady = Promise.reject(e);
     dialog.showErrorBox('Startup Error', 'Critical error starting server: ' + e.message);
 }
 
@@ -72,8 +76,9 @@ async function handleOpenDialog() {
     }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     logger.info('App ready');
+    await serverReady;
     ipcMain.handle('dialog:openDirectory', handleOpenDialog);
     createWindow();
 

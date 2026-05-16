@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const { compressImage } = require('./imageCompressor');
 const { compressVideo } = require('./videoCompressor');
-const { isImage, isVideo, generateOutputPath, normalizeOutputExtension, formatFileSize, getCompressionRatio, getOptimalConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata, clearCaptureDateCache, setCaptureDateCached, validateQuality, validateCrf, validateImageFormat, validateEncoder } = require('./utils');
+const { isImage, isVideo, generateOutputPath, normalizeOutputExtension, formatFileSize, getCompressionRatio, getOptimalConcurrency, getRecommendedVideoConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata, clearCaptureDateCache, setCaptureDateCached, validateQuality, validateCrf, validateImageFormat, validateEncoder } = require('./utils');
 
 // Package info
 const packageJson = require('../package.json');
@@ -164,7 +164,7 @@ async function processDirectory(inputDir, options, type = 'all') {
         };
 
         // Calculate concurrency
-        const concurrency = options.jobs ? parseInt(options.jobs, 10) : getOptimalConcurrency();
+        const concurrency = options.jobs ? Math.max(1, parseInt(options.jobs, 10) || 1) : getOptimalConcurrency();
         const cpuInfo = `${os.cpus().length} cores detected`;
 
         let structureType = 'Mirrored Input Structure';
@@ -243,6 +243,7 @@ async function processDirectory(inputDir, options, type = 'all') {
                         totalOriginal += originalSize;
                         totalCompressed += originalSize;
                         successCount++;
+                        failCount++;
 
                         return { originalSize, compressedSize: originalSize, savings: '0% (copied)' };
                     }
@@ -253,7 +254,7 @@ async function processDirectory(inputDir, options, type = 'all') {
 
         // Process videos in parallel (I/O and CPU heavy)
         if (videoFiles.length > 0) {
-            const videoConcurrency = Math.max(1, Math.min(2, Math.floor(os.cpus().length / 4)));
+            const videoConcurrency = getRecommendedVideoConcurrency(videoFiles.length);
             console.log(chalk.blue(`\n🎬 Processing videos in parallel (${videoConcurrency} jobs)...\n`));
 
             await parallelProcess(
@@ -304,6 +305,7 @@ async function processDirectory(inputDir, options, type = 'all') {
                         totalOriginal += originalSize;
                         totalCompressed += originalSize;
                         successCount++;
+                        failCount++;
                     }
                 },
                 videoConcurrency
