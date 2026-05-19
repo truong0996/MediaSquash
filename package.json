@@ -25,7 +25,8 @@
         "compression": "maximum",
         "win": {
             "target": ["portable", "nsis"],
-            "icon": "gui/icon.png"
+            "icon": "gui/icon.png",
+            "signAndEditExecutable": false
         },
         "mac": {
             "target": ["dmg", "zip"],
@@ -44,6 +45,11 @@
         },
         "files": [
             "**/*",
+            "!dist/**",
+            "!logs/**",
+            "!presets/**",
+            "!tmp_review/**",
+            "!.playwright-mcp/**",
             "!src/test/**",
             "!**/*.md",
             "!**/*.txt",

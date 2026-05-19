@@ -136,6 +136,69 @@ app.post('/api/scan', (req, res) => {
     }
 });
 
+// Scan explicit file or directory paths for media files. Used by desktop drag-and-drop.
+app.post('/api/scan-files', (req, res) => {
+    const { filePaths, recursive, fileType } = req.body;
+
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+        return res.status(400).json({ error: 'No file paths provided' });
+    }
+
+    try {
+        const filter = (filePath) => {
+            if (fileType === 'image') return isImage(filePath);
+            if (fileType === 'video') return isVideo(filePath);
+            return isImage(filePath) || isVideo(filePath);
+        };
+
+        const seen = new Set();
+        const result = [];
+
+        const addFile = (filePath, baseDir) => {
+            if (!filePath || seen.has(filePath) || !fs.existsSync(filePath)) return;
+
+            const stats = fs.statSync(filePath);
+            if (!stats.isFile() || !filter(filePath)) return;
+
+            seen.add(filePath);
+            result.push({
+                path: filePath,
+                baseDir,
+                name: path.basename(filePath),
+                type: isImage(filePath) ? 'image' : 'video',
+                size: stats.size,
+                sizeFormatted: formatFileSize(stats.size)
+            });
+        };
+
+        for (const rawPath of filePaths) {
+            if (!rawPath || !fs.existsSync(rawPath)) continue;
+
+            const filePath = path.resolve(rawPath);
+            const stats = fs.statSync(filePath);
+            if (stats.isDirectory()) {
+                const files = recursive
+                    ? getFilesRecursive(filePath, filter)
+                    : fs.readdirSync(filePath)
+                        .map(f => path.join(filePath, f))
+                        .filter(f => {
+                            try {
+                                return fs.statSync(f).isFile() && filter(f);
+                            } catch { return false; }
+                        });
+
+                files.forEach(file => addFile(file, filePath));
+            } else {
+                addFile(filePath, path.dirname(filePath));
+            }
+        }
+
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Start compression
 app.post('/api/compress', async (req, res) => {
     let { files, outputFolder, inputFolder, encoder, imageFormat, quality, crf, flatten, renameOnly, categoryByYear, categoryByMonth } = req.body;
@@ -297,7 +360,11 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             outputPath = path.join(...parts);
         } else {
             // PRESERVE: Keep original subfolder structure
-            const relativePath = path.relative(inputFolder, file.path);
+            const relativeRoot = file.baseDir || inputFolder;
+            let relativePath = path.relative(relativeRoot, file.path);
+            if (!relativeRoot || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+                relativePath = path.basename(file.path);
+            }
             const relativeDir = path.dirname(relativePath);
             outputPath = path.join(outputFolder, relativeDir, newFilename);
         }
@@ -752,7 +819,7 @@ const startServer = async () => {
                             logger.info(`   Open http://localhost:${PORT} in your browser`);
                         }
                     }
-                    resolve(server);
+                    resolve({ server, port: PORT });
                 });
             })
             .catch(reject);

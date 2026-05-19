@@ -8,6 +8,7 @@ let availableEncoders = { nvenc: false, qsv: false, cpu: true };
 let eventSource = null;
 let presets = [];
 let performanceInterval = null;
+const isElectronMode = typeof window.electronAPI !== 'undefined';
 
 // ============ DOM Elements ============
 const $ = (id) => document.getElementById(id);
@@ -60,11 +61,23 @@ async function init() {
     $('btn-close-preview').onclick = closePreview;
     $('preview-slider').oninput = updatePreviewSlider;
 
+    // Hide preview feature in Web mode
+    if (!isElectronMode) {
+        const previewModal = $('preview-modal');
+        if (previewModal) {
+            previewModal.style.display = 'none';
+        }
+    }
+
     // Retry failed
     $('btn-retry-failed').onclick = retryFailedFiles;
 
     // Presets
     $('btn-save-preset').onclick = savePreset;
+    $('btn-update-preset').onclick = updatePreset;
+    $('btn-copy-preset').onclick = copyPreset;
+    $('btn-delete-preset').onclick = deletePreset;
+    $('btn-toggle-metrics').onclick = toggleMetricsPanel;
     $('preset-select').onchange = loadPreset;
 
     // Drag and drop
@@ -89,56 +102,166 @@ function setupDragAndDrop() {
 
     if (!dropZone) return;
 
+    let dragDepth = 0;
+
+    const showOverlay = () => {
+        overlay.style.display = 'flex';
+        dropZone.style.borderColor = 'var(--accent-purple)';
+    };
+
+    const hideOverlay = () => {
+        dragDepth = 0;
+        overlay.style.display = 'none';
+        dropZone.style.borderColor = '';
+    };
+
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         dropZone.addEventListener(eventName, (e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = 'copy';
+            }
         });
     });
 
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropZone.addEventListener(eventName, () => {
-            overlay.style.display = 'flex';
-            dropZone.style.borderColor = 'var(--accent-purple)';
-        });
+    dropZone.addEventListener('dragenter', (e) => {
+        if (dropZone.contains(e.relatedTarget)) return;
+        dragDepth++;
+        showOverlay();
     });
 
-    ['dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, () => {
-            overlay.style.display = 'none';
-            dropZone.style.borderColor = '';
-        });
+    dropZone.addEventListener('dragover', showOverlay);
+
+    dropZone.addEventListener('dragleave', (e) => {
+        if (dropZone.contains(e.relatedTarget)) return;
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) hideOverlay();
     });
 
     dropZone.addEventListener('drop', async (e) => {
-        const items = e.dataTransfer.items;
-        for (const item of items) {
-            if (item.kind === 'file') {
-                const path = item.getAsFileSystemHandle?.()?.name;
-                if (path) {
-                    $('input-folder').value = path;
-                    if (!$('output-folder').value) {
-                        $('output-folder').value = path + '\\compressed';
-                    }
-                    updateStartButton();
-                    break;
-                }
-            }
+        hideOverlay();
+
+        const droppedPaths = getDroppedPaths(e.dataTransfer);
+        if (droppedPaths.length > 0) {
+            await handleDroppedPaths(droppedPaths);
+            return;
         }
 
         // Fallback: try to get path from data
         const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list');
         if (text) {
-            let cleanPath = text.replace(/^file:\/\/\/?/, '').replace(/\r?\n$/, '');
-            if (cleanPath) {
-                $('input-folder').value = cleanPath;
-                if (!$('output-folder').value) {
-                    $('output-folder').value = cleanPath + '\\compressed';
-                }
-                updateStartButton();
+            const textPaths = getPathsFromDropText(text);
+            if (textPaths.length > 0) {
+                await handleDroppedPaths(textPaths);
+                return;
             }
         }
+
+        if (e.dataTransfer.files?.length && !window.electronAPI?.getPathForFile) {
+            alert('Dropping individual files requires the desktop app. Browsers do not expose local file paths to the server.');
+        }
     });
+}
+
+function getDroppedPaths(dataTransfer) {
+    if (!dataTransfer?.files?.length) return [];
+
+    return Array.from(dataTransfer.files)
+        .map(file => {
+            if (window.electronAPI?.getPathForFile) {
+                return window.electronAPI.getPathForFile(file);
+            }
+
+            return file.path || '';
+        })
+        .filter(Boolean);
+}
+
+async function handleDroppedPaths(paths) {
+    const fileType = document.querySelector('input[name="file-type"]:checked').value;
+    const response = await fetch('/api/scan-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            filePaths: paths,
+            recursive: $('recursive-scan').checked,
+            fileType
+        })
+    });
+
+    if (!response.ok) {
+        const error = await response.json();
+        alert('Error reading dropped files: ' + (error.error || 'Unknown error'));
+        return;
+    }
+
+    const droppedFiles = await response.json();
+    if (droppedFiles.length > 0) {
+        files = droppedFiles.map(file => ({ ...file, status: 'pending' }));
+
+        const commonFolder = getCommonFolder(files.map(file => file.path));
+        if (commonFolder) {
+            $('input-folder').value = commonFolder;
+            if (!$('output-folder').value) {
+                $('output-folder').value = commonFolder + '\\compressed';
+            }
+        }
+
+        renderFileList();
+        updateStartButton();
+        return;
+    }
+
+    if (paths.length === 1) {
+        $('input-folder').value = paths[0];
+        if (!$('output-folder').value) {
+            $('output-folder').value = paths[0] + '\\compressed';
+        }
+        files = [];
+        renderFileList();
+        updateStartButton();
+        return;
+    }
+
+    alert('No supported image or video files were dropped.');
+}
+
+function getPathsFromDropText(text) {
+    return text
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .filter(line => !line.startsWith('#'))
+        .map(line => {
+            const withoutScheme = line.replace(/^file:\/\/\/?/i, '');
+            try {
+                return decodeURIComponent(withoutScheme);
+            } catch {
+                return withoutScheme;
+            }
+        });
+}
+
+function getCommonFolder(filePaths) {
+    if (filePaths.length === 0) return '';
+
+    const separators = /[\\/]/;
+    const folders = filePaths.map(filePath => filePath.split(separators).slice(0, -1));
+    const first = folders[0];
+    let length = first.length;
+
+    for (const folder of folders.slice(1)) {
+        length = Math.min(length, folder.length);
+        for (let i = 0; i < length; i++) {
+            if (folder[i].toLowerCase() !== first[i].toLowerCase()) {
+                length = i;
+                break;
+            }
+        }
+    }
+
+    return first.slice(0, length).join('\\');
 }
 
 // ============ SSE Connection ============
@@ -399,7 +522,7 @@ function updateFileStatus(index, status, extras = {}) {
         }
 
         // Show preview button for images
-        if (files[index].type === 'image') {
+        if (isElectronMode && files[index].type === 'image') {
             const previewBtn = fileRow.querySelector('.preview-btn');
             if (previewBtn) previewBtn.style.display = 'flex';
         }
@@ -698,7 +821,11 @@ async function savePreset() {
     const name = prompt('Enter preset name:');
     if (!name) return;
 
-    const settings = {
+    await upsertPreset(name, getCurrentSettings(), 'Preset saved!');
+}
+
+function getCurrentSettings() {
+    return {
         imageFormat: document.querySelector('input[name="image-format"]:checked').value,
         quality: $('quality-slider').value,
         encoder: document.querySelector('input[name="encoder"]:checked').value,
@@ -709,17 +836,23 @@ async function savePreset() {
         categoryByYear: $('category-by-year').checked,
         categoryByMonth: $('category-by-month').checked
     };
+}
+
+async function upsertPreset(name, settings, successMessage) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
 
     try {
         const response = await fetch('/api/presets', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, settings })
+            body: JSON.stringify({ name: trimmed, settings })
         });
 
         if (response.ok) {
             await loadPresetsFromServer();
-            alert('Preset saved!');
+            $('preset-select').value = trimmed;
+            alert(successMessage);
         } else {
             const error = await response.json();
             alert('Failed to save preset: ' + error.error);
@@ -729,9 +862,67 @@ async function savePreset() {
     }
 }
 
+async function updatePreset() {
+    const name = $('preset-select').value;
+    if (!name) {
+        alert('Select a preset first to update.');
+        return;
+    }
+
+    if (!confirm(`Overwrite preset "${name}" with current settings?`)) return;
+    await upsertPreset(name, getCurrentSettings(), `Preset "${name}" updated.`);
+}
+
+async function copyPreset() {
+    const selected = $('preset-select').value;
+    if (!selected) {
+        alert('Select a preset first to copy.');
+        return;
+    }
+
+    const newName = prompt('Enter new name for copied preset:', `${selected} Copy`);
+    if (!newName) return;
+
+    const source = presets.find(p => p.name === selected);
+    if (!source) {
+        alert('Selected preset not found.');
+        return;
+    }
+
+    await upsertPreset(newName, source.settings, `Preset copied to "${newName.trim()}".`);
+}
+
+async function deletePreset() {
+    const name = $('preset-select').value;
+    if (!name) {
+        alert('Select a preset first to delete.');
+        return;
+    }
+
+    if (!confirm(`Delete preset "${name}"? This cannot be undone.`)) return;
+
+    try {
+        const response = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.error || 'Delete failed');
+        }
+
+        await loadPresetsFromServer();
+        $('preset-select').value = '';
+        resetToCustomDefaults();
+        alert(`Preset "${name}" deleted.`);
+    } catch (error) {
+        alert('Error deleting preset: ' + error.message);
+    }
+}
+
 async function loadPreset() {
     const name = $('preset-select').value;
-    if (!name) return;
+    if (!name) {
+        resetToCustomDefaults();
+        return;
+    }
 
     const preset = presets.find(p => p.name === name);
     if (!preset) return;
@@ -755,6 +946,31 @@ async function loadPreset() {
     $('rename-only').checked = settings.renameOnly;
     $('category-by-year').checked = settings.categoryByYear;
     $('category-by-month').checked = settings.categoryByMonth;
+}
+
+function resetToCustomDefaults() {
+    const defaultFormat = document.querySelector('input[name="image-format"][value="webp"]');
+    if (defaultFormat) defaultFormat.checked = true;
+
+    $('quality-slider').value = '88';
+    $('quality-value').textContent = '88';
+
+    let defaultEncoder = 'x264';
+    if (availableEncoders.nvenc) defaultEncoder = 'nvenc';
+    else if (availableEncoders.amf) defaultEncoder = 'amf';
+    else if (availableEncoders.qsv) defaultEncoder = 'qsv';
+
+    const defaultEncoderRadio = document.querySelector(`input[name="encoder"][value="${defaultEncoder}"]`);
+    if (defaultEncoderRadio) defaultEncoderRadio.checked = true;
+
+    $('crf-slider').value = '22';
+    $('crf-value').textContent = '22';
+
+    $('recursive-scan').checked = false;
+    $('flatten-output').checked = false;
+    $('rename-only').checked = false;
+    $('category-by-year').checked = false;
+    $('category-by-month').checked = false;
 }
 
 // ============ Job Resume ============
@@ -801,6 +1017,14 @@ async function resumeJob() {
 function startPerformanceMetrics() {
     updateMetrics();
     performanceInterval = setInterval(updateMetrics, 5000);
+}
+
+function toggleMetricsPanel() {
+    const metrics = $('metrics-section');
+    if (!metrics) return;
+
+    const isHidden = metrics.style.display === 'none' || metrics.style.display === '';
+    metrics.style.display = isHidden ? 'block' : 'none';
 }
 
 async function updateMetrics() {

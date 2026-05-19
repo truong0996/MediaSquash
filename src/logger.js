@@ -1,11 +1,19 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-const logDir = path.join(__dirname, '..', 'logs');
+const isPackaged = __dirname.includes('.asar');
+const writableRoot = process.env.LOCALAPPDATA || process.env.APPDATA || os.tmpdir();
+const logDir = isPackaged
+    ? path.join(writableRoot, 'MediaSquash', 'logs')
+    : path.join(__dirname, '..', 'logs');
 const logFile = path.join(logDir, 'mediasquash.log');
 
-if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
+try {
+    if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true });
+    }
+} catch {
 }
 
 const LOG_LEVELS = {

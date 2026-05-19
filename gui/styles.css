@@ -258,6 +258,7 @@ body::after {
     justify-content: center;
     flex-direction: column;
     gap: 8px;
+    pointer-events: none;
 }
 
 .drop-icon {
@@ -342,6 +343,7 @@ body::after {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
 }
 
 .preset-select {
@@ -371,6 +373,35 @@ body::after {
     width: 28px;
     height: 28px;
     font-size: 14px;
+}
+
+.preset-action-btn {
+    background: var(--glass-border);
+    border: 1px solid transparent;
+    color: var(--text-primary);
+    border-radius: var(--radius-sm);
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+
+.preset-action-btn:hover {
+    background: var(--accent-purple);
+    color: #fff;
+    transform: translateY(-1px);
+}
+
+.preset-action-btn.danger:hover {
+    background: var(--accent-danger);
+}
+
+.metrics-toggle-row {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 8px;
+    margin-top: -8px;
 }
 
 /* Custom Checkbox */

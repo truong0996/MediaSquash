@@ -11,7 +11,7 @@ if (!gotTheLock) {
     app.quit();
 }
 
-function createWindow() {
+function createWindow(port) {
     logger.info('Creating window...');
     const mainWindow = new BrowserWindow({
         width: 1280,
@@ -26,8 +26,9 @@ function createWindow() {
 
     mainWindow.setMenuBarVisibility(false);
 
-    logger.info('Loading URL...');
-    mainWindow.loadURL('http://localhost:3847')
+    const url = `http://localhost:${port}`;
+    logger.info('Loading URL: ' + url);
+    mainWindow.loadURL(url)
         .then(() => logger.info('URL loaded successfully'))
         .catch(err => logger.error('Failed to load URL: ' + err.message));
 
@@ -43,13 +44,15 @@ function createWindow() {
 process.env.ELECTRON_APP = 'true';
 
 let serverReady;
+let serverPort = process.env.PORT || 3847;
 
 try {
     logger.info('Starting server...');
     const serverPromise = require('./server.js');
     // Start server if it exports a Promise
     if (typeof serverPromise === 'object' && serverPromise instanceof Promise) {
-        serverReady = serverPromise.then(() => {
+        serverReady = serverPromise.then((serverInfo) => {
+            serverPort = serverInfo?.port || serverPort;
             logger.info('Server started successfully');
         }).catch(err => {
             logger.error('Server failed to start (promise rejected): ' + err.stack);
@@ -80,11 +83,11 @@ app.whenReady().then(async () => {
     logger.info('App ready');
     await serverReady;
     ipcMain.handle('dialog:openDirectory', handleOpenDialog);
-    createWindow();
+    createWindow(serverPort);
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
-            createWindow();
+            createWindow(serverPort);
         }
     });
 });

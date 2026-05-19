@@ -22,7 +22,7 @@
         <div class="glass-panel io-section" id="drop-zone">
             <div class="drop-overlay" id="drop-overlay">
                 <span class="drop-icon">📂</span>
-                <span class="drop-text">Drop folders here</span>
+                <span class="drop-text">Drop folders or media files here</span>
             </div>
             <div class="input-group">
                 <label class="input-label">Source Folder</label>
@@ -60,6 +60,9 @@
                     <option value="">Custom</option>
                 </select>
                 <button class="btn-icon-inside" id="btn-save-preset" title="Save current settings as preset">💾</button>
+                <button class="preset-action-btn" id="btn-update-preset" title="Update selected preset">Update</button>
+                <button class="preset-action-btn" id="btn-copy-preset" title="Copy selected preset">Copy</button>
+                <button class="preset-action-btn danger" id="btn-delete-preset" title="Delete selected preset">Delete</button>
             </div>
 
             <!-- Checkboxes -->
@@ -105,6 +108,10 @@
                     Videos only
                 </label>
             </div>
+        </div>
+
+        <div class="metrics-toggle-row">
+            <button class="preset-action-btn" id="btn-toggle-metrics" title="Show/Hide performance panel">Performance</button>
         </div>
 
         <!-- Settings Grid -->
@@ -227,7 +234,7 @@
         </div>
 
         <!-- Performance Metrics Section -->
-        <div class="glass-panel metrics-section" id="metrics-section">
+        <div class="glass-panel metrics-section" id="metrics-section" style="display: none;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-weight: 600; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">📊 Performance</span>
                 <span id="metrics-uptime" style="font-size: 12px; color: var(--text-muted);"></span>
