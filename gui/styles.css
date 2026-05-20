@@ -332,10 +332,33 @@ body::after {
 /* ============ Filters & Options Bar ============ */
 .options-bar {
     display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 0 8px;
+}
+
+.options-top-row,
+.options-bottom-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.options-top-row {
+    flex-wrap: wrap;
+}
+
+.options-bottom-row {
+    flex-wrap: wrap;
+}
+
+.checkbox-group {
+    display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 24px;
-    padding: 0 8px;
+    flex: 1;
 }
 
 /* Preset Selector */
@@ -395,13 +418,6 @@ body::after {
 
 .preset-action-btn.danger:hover {
     background: var(--accent-danger);
-}
-
-.metrics-toggle-row {
-    display: flex;
-    justify-content: flex-end;
-    padding: 0 8px;
-    margin-top: -8px;
 }
 
 /* Custom Checkbox */
@@ -822,6 +838,25 @@ body::after {
     .container {
         padding: 16px;
         gap: 16px;
+    }
+
+    .options-top-row,
+    .options-bottom-row {
+        align-items: stretch;
+    }
+
+    .file-type-group,
+    .preset-selector,
+    #btn-toggle-metrics {
+        width: 100%;
+    }
+
+    .file-type-group {
+        justify-content: center;
+    }
+
+    #btn-toggle-metrics {
+        text-align: center;
     }
 
     .settings-container {

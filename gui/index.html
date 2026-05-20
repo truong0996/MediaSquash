@@ -53,65 +53,65 @@
 
         <!-- Options Bar -->
         <div class="options-bar">
-            <!-- Preset Selector -->
-            <div class="preset-selector">
-                <label class="input-label" style="margin: 0;">Presets:</label>
-                <select id="preset-select" class="preset-select">
-                    <option value="">Custom</option>
-                </select>
-                <button class="btn-icon-inside" id="btn-save-preset" title="Save current settings as preset">💾</button>
-                <button class="preset-action-btn" id="btn-update-preset" title="Update selected preset">Update</button>
-                <button class="preset-action-btn" id="btn-copy-preset" title="Copy selected preset">Copy</button>
-                <button class="preset-action-btn danger" id="btn-delete-preset" title="Delete selected preset">Delete</button>
+            <div class="options-top-row">
+                <div class="checkbox-group">
+                    <label class="checkbox-option">
+                        <input type="checkbox" id="recursive-scan">
+                        <div class="custom-check"></div>
+                        Include subfolders
+                    </label>
+                    <label class="checkbox-option">
+                        <input type="checkbox" id="flatten-output">
+                        <div class="custom-check"></div>
+                        Flatten output
+                    </label>
+                    <label class="checkbox-option">
+                        <input type="checkbox" id="rename-only">
+                        <div class="custom-check"></div>
+                        Rename only
+                    </label>
+                    <label class="checkbox-option">
+                        <input type="checkbox" id="category-by-year">
+                        <div class="custom-check"></div>
+                        Category by year
+                    </label>
+                    <label class="checkbox-option">
+                        <input type="checkbox" id="category-by-month">
+                        <div class="custom-check"></div>
+                        Category by month
+                    </label>
+                </div>
+
+                <div class="file-type-group">
+                    <label class="type-radio active">
+                        <input type="radio" name="file-type" value="all" checked>
+                        All
+                    </label>
+                    <label class="type-radio">
+                        <input type="radio" name="file-type" value="image">
+                        Images only
+                    </label>
+                    <label class="type-radio">
+                        <input type="radio" name="file-type" value="video">
+                        Videos only
+                    </label>
+                </div>
             </div>
 
-            <!-- Checkboxes -->
-            <label class="checkbox-option">
-                <input type="checkbox" id="recursive-scan">
-                <div class="custom-check"></div>
-                Include subfolders
-            </label>
-            <label class="checkbox-option">
-                <input type="checkbox" id="flatten-output">
-                <div class="custom-check"></div>
-                Flatten output
-            </label>
-            <label class="checkbox-option">
-                <input type="checkbox" id="rename-only">
-                <div class="custom-check"></div>
-                Rename only
-            </label>
-            <label class="checkbox-option">
-                <input type="checkbox" id="category-by-year">
-                <div class="custom-check"></div>
-                Category by year
-            </label>
-            <label class="checkbox-option">
-                <input type="checkbox" id="category-by-month">
-                <div class="custom-check"></div>
-                Category by month
-            </label>
+            <div class="options-bottom-row">
+                <div class="preset-selector">
+                    <label class="input-label" style="margin: 0;">Presets:</label>
+                    <select id="preset-select" class="preset-select">
+                        <option value="">Custom</option>
+                    </select>
+                    <button class="btn-icon-inside" id="btn-save-preset" title="Save current settings as preset">💾</button>
+                    <button class="preset-action-btn" id="btn-update-preset" title="Update selected preset">Update</button>
+                    <button class="preset-action-btn" id="btn-copy-preset" title="Copy selected preset">Copy</button>
+                    <button class="preset-action-btn danger" id="btn-delete-preset" title="Delete selected preset">Delete</button>
+                </div>
 
-            <!-- File Type Switcher -->
-            <div style="flex: 1"></div> <!-- Spacer -->
-            <div class="file-type-group">
-                <label class="type-radio active">
-                    <input type="radio" name="file-type" value="all" checked>
-                    All
-                </label>
-                <label class="type-radio">
-                    <input type="radio" name="file-type" value="image">
-                    Images only
-                </label>
-                <label class="type-radio">
-                    <input type="radio" name="file-type" value="video">
-                    Videos only
-                </label>
+                <button class="preset-action-btn" id="btn-toggle-metrics" title="Show/Hide performance panel">Performance</button>
             </div>
-        </div>
-
-        <div class="metrics-toggle-row">
-            <button class="preset-action-btn" id="btn-toggle-metrics" title="Show/Hide performance panel">Performance</button>
         </div>
 
         <!-- Settings Grid -->
