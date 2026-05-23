@@ -725,25 +725,6 @@ app.get('/api/metrics', (req, res) => {
     });
 });
 
-// Get file stat for preview
-app.get('/api/file-stat', (req, res) => {
-    const filePath = req.query.path;
-    if (!filePath) {
-        return res.status(400).json({ error: 'Path required' });
-    }
-
-    try {
-        const stats = fs.statSync(filePath);
-        res.json({
-            size: stats.size,
-            sizeFormatted: formatFileSize(stats.size),
-            mtime: stats.mtime
-        });
-    } catch {
-        res.status(404).json({ error: 'File not found' });
-    }
-});
-
 // Get current status
 app.get('/api/status', (req, res) => {
     res.json({

@@ -311,34 +311,6 @@
     </div>
 
     <!-- Before/After Preview Modal -->
-    <div id="preview-modal" class="modal-overlay">
-        <div class="preview-card modal-content">
-            <button class="modal-close" id="btn-close-preview">×</button>
-            <div class="preview-header">
-                <span>🔍 Before / After Comparison</span>
-                <span id="preview-filename" class="preview-filename"></span>
-            </div>
-            <div class="preview-container">
-                <div class="preview-pane">
-                    <div class="preview-label">Original</div>
-                    <img id="preview-original" alt="Original" />
-                    <div class="preview-size" id="preview-original-size"></div>
-                </div>
-                <div class="preview-divider">
-                    <input type="range" id="preview-slider" min="0" max="100" value="50" class="preview-slider" />
-                </div>
-                <div class="preview-pane">
-                    <div class="preview-label">Compressed</div>
-                    <img id="preview-compressed" alt="Compressed" />
-                    <div class="preview-size" id="preview-compressed-size"></div>
-                </div>
-            </div>
-            <div class="preview-stats">
-                <span id="preview-savings"></span>
-            </div>
-        </div>
-    </div>
-
     <script src="renderer.js"></script>
 
     <!-- Script to handle UI interactions that CSS can't do (like active class on parent) -->

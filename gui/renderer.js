@@ -57,18 +57,6 @@ async function init() {
         if (e.target.id === 'summary-modal') closeModal();
     });
 
-    // Preview modal
-    $('btn-close-preview').onclick = closePreview;
-    $('preview-slider').oninput = updatePreviewSlider;
-
-    // Hide preview feature in Web mode
-    if (!isElectronMode) {
-        const previewModal = $('preview-modal');
-        if (previewModal) {
-            previewModal.style.display = 'none';
-        }
-    }
-
     // Retry failed
     $('btn-retry-failed').onclick = retryFailedFiles;
 
@@ -455,7 +443,6 @@ function renderFileList() {
                 </div>
             </div>
             <div class="col-actions">
-                <button class="action-btn-sm preview-btn" onclick="previewFile(${index})" title="Preview" style="display: none;">🔍</button>
             </div>
         </div>
     `).join('');
@@ -521,11 +508,7 @@ function updateFileStatus(index, status, extras = {}) {
             colProgress.innerHTML = `<span class="file-savings" style="color: var(--accent-success); font-weight: 600;">✓ ${extras.savings}</span>`;
         }
 
-        // Show preview button for images
-        if (isElectronMode && files[index].type === 'image') {
-            const previewBtn = fileRow.querySelector('.preview-btn');
-            if (previewBtn) previewBtn.style.display = 'flex';
-        }
+        // Preview button removed per user request
     } else if (status === 'skipped') {
         const savedText = typeof extras.savings === 'number' ? `${formatBytes(extras.savings)} saved` : extras.savings;
         colProgress.innerHTML = `<span class="file-savings" style="color: var(--text-secondary); font-weight: 600;">Skipped${savedText ? ` (${savedText})` : ''}</span>`;
@@ -742,59 +725,6 @@ function closeModal() {
 }
 
 // ============ Before/After Preview ============
-async function previewFile(index) {
-    const file = files[index];
-    if (!file || file.type !== 'image' || file.status !== 'completed') return;
-
-    const modal = $('preview-modal');
-    $('preview-filename').textContent = file.name;
-    $('preview-original').src = `file://${file.path}`;
-    $('preview-original-size').textContent = file.sizeFormatted;
-
-    const outputFolder = $('output-folder').value;
-    const imageFormat = document.querySelector('input[name="image-format"]:checked').value;
-    const ext = imageFormat.startsWith('.') ? imageFormat : `.${imageFormat}`;
-    const baseName = file.name.replace(/\.[^.]+$/, '');
-    const compressedPath = `${outputFolder}\\${baseName}${ext}`;
-
-    $('preview-compressed').src = `file://${compressedPath}`;
-    $('preview-compressed-size').textContent = 'Loading...';
-
-    try {
-        const stat = await fetch(`/api/file-stat?path=${encodeURIComponent(compressedPath)}`);
-        if (stat.ok) {
-            const data = await stat.json();
-            $('preview-compressed-size').textContent = data.sizeFormatted;
-            const savings = ((file.size - data.size) / file.size * 100).toFixed(1);
-            $('preview-savings').textContent = `Saved: ${savings}% (${formatBytes(file.size - data.size)})`;
-        }
-    } catch {
-        $('preview-compressed-size').textContent = 'N/A';
-        $('preview-savings').textContent = '';
-    }
-
-    $('preview-slider').value = 50;
-    updatePreviewSlider();
-
-    modal.style.display = 'flex';
-    modal.offsetHeight;
-    modal.classList.add('show');
-}
-
-function closePreview() {
-    const modal = $('preview-modal');
-    modal.classList.remove('show');
-    setTimeout(() => {
-        modal.style.display = 'none';
-    }, 300);
-}
-
-function updatePreviewSlider() {
-    const slider = $('preview-slider');
-    const value = slider.value;
-    slider.style.background = `linear-gradient(to right, var(--accent-purple) 0%, var(--accent-purple) ${value}%, rgba(255,255,255,0.1) ${value}%, rgba(255,255,255,0.1) 100%)`;
-}
-
 // ============ Presets ============
 async function loadPresetsFromServer() {
     try {
