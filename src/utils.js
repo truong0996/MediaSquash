@@ -100,16 +100,20 @@ function isLowMemory() {
  * Check if a file has already been processed
  * Returns true if output exists and was generated after the input.
  * This also handles outputs whose mtime was intentionally copied from the input.
+ * Callers that already hold the stat objects should pass them in; each
+ * statSync is a blocking syscall repeated for every candidate output path.
  * @param {string} inputPath - Input file path
  * @param {string} outputPath - Output file path
+ * @param {fs.Stats} [knownOutputStat] - Pre-fetched stat for outputPath
+ * @param {fs.Stats} [knownInputStat] - Pre-fetched stat for inputPath
  * @returns {boolean}
  */
-function isAlreadyProcessed(inputPath, outputPath) {
+function isAlreadyProcessed(inputPath, outputPath, knownOutputStat, knownInputStat) {
     try {
-        if (!fs.existsSync(outputPath)) return false;
+        if (!knownOutputStat && !fs.existsSync(outputPath)) return false;
 
-        const inputStat = fs.statSync(inputPath);
-        const outputStat = fs.statSync(outputPath);
+        const inputStat = knownInputStat || fs.statSync(inputPath);
+        const outputStat = knownOutputStat || fs.statSync(outputPath);
 
         // Output is newer than input
         if (outputStat.mtimeMs > inputStat.mtimeMs) {
@@ -289,6 +293,43 @@ if (ffprobePath && ffprobePath.includes('app.asar')) {
 }
 ffmpeg.setFfprobePath(ffprobePath);
 
+// Directory listings are cached because findJsonSidecar runs once per media file.
+// Without the cache a folder of N files costs N readdirSync calls over the same
+// directory, which dominates scan time on large Google Takeout exports.
+const dirEntryCache = new Map();
+const DIR_CACHE_MAX = 64;
+
+function getDirEntries(dir) {
+    const cached = dirEntryCache.get(dir);
+    if (cached) return cached;
+
+    let entries;
+    try {
+        const files = fs.readdirSync(dir);
+        // Windows paths are case-insensitive, so key the exact-match lookup by
+        // lowercase name to match the previous fs.existsSync() behaviour.
+        const byLowerName = new Map();
+        const jsonFiles = [];
+        for (const f of files) {
+            byLowerName.set(f.toLowerCase(), f);
+            if (f.toLowerCase().endsWith('.json')) jsonFiles.push(f);
+        }
+        entries = { byLowerName, jsonFiles };
+    } catch {
+        entries = { byLowerName: new Map(), jsonFiles: [] };
+    }
+
+    // Processing is directory-local, so a small cap keeps memory bounded
+    // without meaningfully hurting the hit rate.
+    if (dirEntryCache.size >= DIR_CACHE_MAX) dirEntryCache.clear();
+    dirEntryCache.set(dir, entries);
+    return entries;
+}
+
+function clearDirEntryCache() {
+    dirEntryCache.clear();
+}
+
 // Helper to find Google Takeout JSON sidecar with fuzzy matching
 function findJsonSidecar(filePath) {
     const dir = path.dirname(filePath);
@@ -296,49 +337,91 @@ function findJsonSidecar(filePath) {
     const extension = path.extname(filePath);
     const baseName = path.basename(filePath, extension);
 
+    const { byLowerName, jsonFiles } = getDirEntries(dir);
+    if (byLowerName.size === 0) return null;
+
     const exactCandidates = [
-        filePath + '.json',
-        filePath + '.supplemental-metadata.json'
+        fileName + '.json',
+        fileName + '.supplemental-metadata.json'
     ];
     for (const exact of exactCandidates) {
-        if (fs.existsSync(exact)) return exact;
+        const actual = byLowerName.get(exact.toLowerCase());
+        if (actual) return path.join(dir, actual);
     }
 
-    try {
-        const files = fs.readdirSync(dir);
-        const jsonFiles = files.filter(f => f.toLowerCase().endsWith('.json'));
+    let bestMatch = null;
+    let bestMatchLen = 0;
 
-        let bestMatch = null;
-        let bestMatchLen = 0;
+    for (const jsonFile of jsonFiles) {
+        const jsonBase = path.basename(jsonFile, '.json');
 
-        for (const jsonFile of jsonFiles) {
-            const jsonPath = path.join(dir, jsonFile);
-            const jsonBase = path.basename(jsonFile, '.json');
-
-            if (jsonFile.startsWith(fileName)) {
-                if (jsonFile.length > bestMatchLen) {
-                    bestMatch = jsonPath;
-                    bestMatchLen = jsonFile.length;
-                }
-                continue;
+        if (jsonFile.startsWith(fileName)) {
+            if (jsonFile.length > bestMatchLen) {
+                bestMatch = path.join(dir, jsonFile);
+                bestMatchLen = jsonFile.length;
             }
+            continue;
+        }
 
-            if (baseName.startsWith(jsonBase)) {
-                if (jsonBase.length >= 8) {
-                    if (jsonFile.length > bestMatchLen) {
-                        bestMatch = jsonPath;
-                        bestMatchLen = jsonFile.length;
-                    }
+        if (baseName.startsWith(jsonBase)) {
+            if (jsonBase.length >= 8) {
+                if (jsonFile.length > bestMatchLen) {
+                    bestMatch = path.join(dir, jsonFile);
+                    bestMatchLen = jsonFile.length;
                 }
             }
         }
-
-        return bestMatch;
-
-    } catch (e) {
-        // ignore read errors
     }
-    return null;
+
+    return bestMatch;
+}
+
+// ffprobe spawns a child process per call. A video is probed twice per job
+// (once for its capture date, once for adaptive CRF), so results are cached
+// and in-flight probes are shared instead of duplicated.
+const probeCache = new Map();
+
+/**
+ * Run ffprobe on a video, reusing any cached or in-flight result.
+ * @param {string} filePath
+ * @returns {Promise<Object|null>} - ffprobe metadata, or null if probing failed
+ */
+function probeVideo(filePath) {
+    const cached = probeCache.get(filePath);
+    if (cached) return cached;
+
+    const promise = new Promise((resolve) => {
+        ffmpeg.ffprobe(filePath, (err, metadata) => {
+            resolve(err ? null : metadata);
+        });
+    });
+
+    probeCache.set(filePath, promise);
+    return promise;
+}
+
+function clearProbeCache() {
+    probeCache.clear();
+}
+
+// Directories are created once per job; remembering them avoids an
+// existsSync + mkdirSync pair for every file written to the same folder.
+const createdDirCache = new Set();
+
+/**
+ * Ensure a directory exists, skipping the syscall if already created this run.
+ * @param {string} dir - Directory path
+ */
+function ensureDirCached(dir) {
+    if (createdDirCache.has(dir)) return;
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    createdDirCache.add(dir);
+}
+
+function clearCreatedDirCache() {
+    createdDirCache.clear();
 }
 
 /**
@@ -391,31 +474,22 @@ async function getCaptureDate(filePath) {
 
     if (!result && isVideo(filePath)) {
         try {
-            result = await new Promise((resolve) => {
-                ffmpeg.ffprobe(filePath, (err, metadata) => {
-                    if (err) {
-                        resolve(null);
-                        return;
-                    }
+            const metadata = await probeVideo(filePath);
+            if (metadata) {
+                const tags = metadata.format?.tags || {};
+                const creationTime =
+                    tags['com.apple.quicktime.creationdate'] ||
+                    tags['creation_date'] ||
+                    tags['creation_time'] ||
+                    metadata.streams?.find(s => s.tags?.creation_time)?.tags?.creation_time;
 
-                    const tags = metadata.format?.tags || {};
-                    const creationTime =
-                        tags['com.apple.quicktime.creationdate'] ||
-                        tags['creation_date'] ||
-                        tags['creation_time'] ||
-                        metadata.streams?.find(s => s.tags?.creation_time)?.tags?.creation_time;
-
-                    if (creationTime) {
-                        const dateObj = new Date(creationTime);
-                        if (!isNaN(dateObj.getTime())) {
-                            const hasOffset = creationTime.includes('+') || (creationTime.match(/-/g) || []).length > 2;
-                            resolve(toLocalAsUTC(dateObj));
-                            return;
-                        }
+                if (creationTime) {
+                    const dateObj = new Date(creationTime);
+                    if (!isNaN(dateObj.getTime())) {
+                        result = toLocalAsUTC(dateObj);
                     }
-                    resolve(null);
-                });
-            });
+                }
+            }
         } catch {
         }
 
@@ -531,6 +605,9 @@ const captureDateCache = new Map();
 
 function clearCaptureDateCache() {
     captureDateCache.clear();
+    clearDirEntryCache();
+    clearProbeCache();
+    clearCreatedDirCache();
 }
 
 function getCaptureDateCached(filePath) {
@@ -600,5 +677,10 @@ module.exports = {
     getAvailableMemory,
     getRecommendedVideoConcurrency,
     isLowMemory,
-    isAlreadyProcessed
+    isAlreadyProcessed,
+    probeVideo,
+    clearProbeCache,
+    ensureDirCached,
+    clearCreatedDirCache,
+    clearDirEntryCache
 };

@@ -282,12 +282,24 @@ function connectSSE() {
         updateFileStatus(data.index, 'failed', { error: data.error });
     });
 
+    // Overall progress fires once per completed file. On a large library that is
+    // thousands of events, so the DOM write is coalesced to one per frame.
+    let pendingOverall = null;
+    let overallFrame = null;
+
     eventSource.addEventListener('overall-progress', (e) => {
-        const data = JSON.parse(e.data);
-        $('progress-bar').style.width = `${data.percent}%`;
-        $('progress-text').textContent = `${data.percent.toFixed(0)}%`;
-        $('progress-count').textContent = `${data.processed}/${data.total}`;
-        $('metric-processed').textContent = data.processed;
+        pendingOverall = JSON.parse(e.data);
+        if (overallFrame !== null) return;
+
+        overallFrame = requestAnimationFrame(() => {
+            overallFrame = null;
+            const data = pendingOverall;
+            if (!data) return;
+            $('progress-bar').style.width = `${data.percent}%`;
+            $('progress-text').textContent = `${data.percent.toFixed(0)}%`;
+            $('progress-count').textContent = `${data.processed}/${data.total}`;
+            $('metric-processed').textContent = data.processed;
+        });
     });
 
     eventSource.addEventListener('complete', (e) => {
@@ -416,6 +428,21 @@ async function scanFolder() {
     }
 }
 
+// A filename may legitimately contain <, > or quotes, which would otherwise
+// break out of the row markup below.
+function escapeHtml(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// Each row is four elements, so a full render of a very large library costs
+// tens of thousands of nodes and seconds of layout. Rows past this cap are not
+// built; updateFileStatus already tolerates a missing row.
+const MAX_RENDERED_ROWS = 2000;
+
 function renderFileList() {
     const fileList = $('file-list');
     const fileCount = $('file-count');
@@ -426,17 +453,22 @@ function renderFileList() {
         return;
     }
 
-    const imageCount = files.filter(f => f.type === 'image').length;
-    const videoCount = files.filter(f => f.type === 'video').length;
+    let imageCount = 0;
+    for (const f of files) {
+        if (f.type === 'image') imageCount++;
+    }
+    const videoCount = files.length - imageCount;
     fileCount.textContent = `${files.length} files (${imageCount} images, ${videoCount} videos)`;
 
-    fileList.innerHTML = files.map((file, index) => `
+    const visible = files.length > MAX_RENDERED_ROWS ? files.slice(0, MAX_RENDERED_ROWS) : files;
+
+    let html = visible.map((file, index) => `
         <div class="file-row" id="file-${index}" data-index="${index}">
             <div class="col-name">
                 <span class="file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
-                <span class="file-name-text" title="${file.name}">${file.name}</span>
+                <span class="file-name-text" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
             </div>
-            <div class="col-size">${file.sizeFormatted}</div>
+            <div class="col-size">${escapeHtml(file.sizeFormatted)}</div>
             <div class="col-progress">
                 <div class="mini-progress-track">
                     <div class="mini-progress-bar" style="width: 0%"></div>
@@ -446,6 +478,12 @@ function renderFileList() {
             </div>
         </div>
     `).join('');
+
+    if (files.length > MAX_RENDERED_ROWS) {
+        html += `<div class="file-list-empty">Showing first ${MAX_RENDERED_ROWS} of ${files.length} files. All ${files.length} will be processed.</div>`;
+    }
+
+    fileList.innerHTML = html;
 }
 
 function getStatusText(status) {
@@ -521,8 +559,27 @@ function updateFileStatus(index, status, extras = {}) {
     }
 }
 
+// With up to a dozen workers running, every one of them requesting a smooth
+// scroll turns the list into a jittery mess and keeps the compositor busy.
+// Follow the most recent file at most a few times a second instead.
+const SCROLL_THROTTLE_MS = 400;
+let lastScrollAt = 0;
+let pendingScrollIndex = null;
+
 function scrollToFile(index) {
-    const fileItem = document.getElementById(`file-${index}`);
+    pendingScrollIndex = index;
+
+    const now = performance.now();
+    const wait = SCROLL_THROTTLE_MS - (now - lastScrollAt);
+    if (wait > 0) {
+        return;
+    }
+
+    lastScrollAt = now;
+    const target = pendingScrollIndex;
+    pendingScrollIndex = null;
+
+    const fileItem = document.getElementById(`file-${target}`);
     if (fileItem) {
         fileItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }

@@ -85,8 +85,13 @@ const ENCODER_CONFIGS = {
     }
 };
 
-// Cache for encoder availability (avoid repeated detection)
+// Cache for encoder availability (avoid repeated detection).
+// The in-flight promise is cached too: detection costs several FFmpeg spawns
+// plus a test encode per encoder, and every video worker asks for it at once
+// on startup, so caching only the settled result lets them all race and
+// duplicate the whole probe.
 let encoderCache = null;
+let encoderDetectionInFlight = null;
 
 /**
  * Run FFmpeg command and return stdout
@@ -143,7 +148,17 @@ async function detectAvailableEncoders(forceRecheck = false) {
     if (encoderCache && !forceRecheck) {
         return encoderCache;
     }
+    if (encoderDetectionInFlight && !forceRecheck) {
+        return encoderDetectionInFlight;
+    }
 
+    encoderDetectionInFlight = runEncoderDetection().finally(() => {
+        encoderDetectionInFlight = null;
+    });
+    return encoderDetectionInFlight;
+}
+
+async function runEncoderDetection() {
     console.log('🔍 Detecting available hardware encoders...');
 
     const results = {
@@ -254,6 +269,7 @@ async function getEncoderConfig(encoder = 'auto') {
 function setFFmpegPath(customPath) {
     ffmpegPath = customPath;
     encoderCache = null; // Reset cache when path changes
+    encoderDetectionInFlight = null;
 }
 
 /**

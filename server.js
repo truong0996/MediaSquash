@@ -10,11 +10,17 @@ const logger = require('./src/logger');
 
 // Import compression modules
 const { compressImage } = require('./src/imageCompressor');
-const { compressVideo, detectAvailableEncoders, getAdaptiveCrf, getVideoInfo } = require('./src/videoCompressor');
-const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename, normalizeOutputExtension, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, validateQuality, validateCrf, validateImageFormat, validateEncoder, clearCaptureDateCache, setCaptureDateCached, getCaptureDateCached, getAvailableMemory, getRecommendedVideoConcurrency, isLowMemory, isAlreadyProcessed } = require('./src/utils');
+const { compressVideo, detectAvailableEncoders, getAdaptiveCrf } = require('./src/videoCompressor');
+const { getEncoderConfig } = require('./src/hwEncoder');
+const { isImage, isVideo, getFilesRecursive, formatFileSize, setFileMetadata, getCaptureDate, formatDateForFilename, normalizeOutputExtension, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, validateQuality, validateCrf, validateImageFormat, validateEncoder, clearCaptureDateCache, setCaptureDateCached, getCaptureDateCached, getAvailableMemory, getRecommendedVideoConcurrency, isLowMemory, isAlreadyProcessed, probeVideo, ensureDirCached, clearCreatedDirCache } = require('./src/utils');
 
 const app = express();
 const BASE_PORT = process.env.PORT || 3847;
+// The API scans and writes arbitrary filesystem paths with no authentication,
+// so it must not be reachable from the network. Binding to all interfaces would
+// hand any machine on the same Wi-Fi read/write access to this one.
+// Override only if you understand that (e.g. HOST=0.0.0.0 on a trusted LAN).
+const HOST = process.env.HOST || '127.0.0.1';
 
 // Middleware
 app.use(express.json({ limit: '50mb' })); // Increased limit for large file lists
@@ -70,9 +76,50 @@ function clearJobState() {
 let sseClients = [];
 
 function sendSSE(event, data) {
-    sseClients.forEach(client => {
-        client.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-    });
+    if (sseClients.length === 0) return;
+
+    const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    let dead = null;
+
+    for (const client of sseClients) {
+        // A client that reloaded the window may already be destroyed; writing
+        // to it throws and would otherwise abort the file currently compressing.
+        if (client.writableEnded || client.destroyed) {
+            (dead || (dead = [])).push(client);
+            continue;
+        }
+        try {
+            client.write(payload);
+        } catch {
+            (dead || (dead = [])).push(client);
+        }
+    }
+
+    if (dead) {
+        sseClients = sseClients.filter(client => !dead.includes(client));
+    }
+}
+
+// FFmpeg emits progress several times per second per video. Forwarding every
+// tick floods the SSE stream and forces a DOM write per event in the browser,
+// so per-file progress is rate limited to a visually indistinguishable cadence.
+const PROGRESS_THROTTLE_MS = 250;
+const progressThrottle = new Map();
+
+function sendFileProgress(index, percent) {
+    const now = Date.now();
+    const last = progressThrottle.get(index);
+    const rounded = Math.round(percent);
+
+    if (last) {
+        // Nothing new to show.
+        if (rounded === last.percent) return;
+        // Let 100% through immediately so the row settles at full.
+        if (rounded < 100 && now - last.at < PROGRESS_THROTTLE_MS) return;
+    }
+
+    progressThrottle.set(index, { at: now, percent: rounded });
+    sendSSE('file-progress', { index, percent: rounded });
 }
 
 // ============ API Routes ============
@@ -281,13 +328,18 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
     const VIDEO_CONCURRENCY = getRecommendedVideoConcurrency(files.length);
 
     // Threads for decoding/preprocessing (GPU handles encoding)
-    const THREADS_PER_VIDEO = Math.max(2, Math.floor(cpuCount / VIDEO_CONCURRENCY));
+    let THREADS_PER_VIDEO = Math.max(2, Math.floor(cpuCount / VIDEO_CONCURRENCY));
 
     const memGB = (freeMem / (1024 * 1024 * 1024)).toFixed(1);
     console.log(`⚡ Dynamic concurrency: ${IMAGE_CONCURRENCY} images, ${VIDEO_CONCURRENCY} videos`);
     console.log(`   CPU: ${cpuCount} cores | RAM: ${memGB}GB free | Video workers: ${VIDEO_CONCURRENCY}`);
 
     const reservedOutputPaths = new Set();
+    progressThrottle.clear();
+    // Retry and resume reach this function without going through /api/compress,
+    // so reset the per-job caches here rather than at the endpoint. A folder
+    // deleted between runs must not stay marked as created.
+    clearCreatedDirCache();
 
     // Check for low memory warning
     if (isLowMemory()) {
@@ -369,21 +421,41 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             outputPath = path.join(outputFolder, relativeDir, newFilename);
         }
 
-        const originalSize = fs.statSync(file.path).size;
+        const inputStat = fs.statSync(file.path);
+        const originalSize = inputStat.size;
         const baseOutputPath = outputPath;
         const baseNoExt = newFilename.slice(0, -outputExt.length);
         let counter = 0;
 
+        // This loop is fully synchronous, so the reservation below is atomic
+        // with respect to the other workers sharing reservedOutputPaths.
         while (true) {
             const candidatePath = counter === 0
                 ? baseOutputPath
                 : path.join(path.dirname(baseOutputPath), `${baseNoExt}_${counter}${outputExt}`);
 
-            if (!reservedOutputPaths.has(candidatePath) && !renameOnly && isAlreadyProcessed(file.path, candidatePath)) {
+            if (reservedOutputPaths.has(candidatePath)) {
+                counter++;
+                continue;
+            }
+
+            // One stat answers both "does it exist" and "is it already
+            // processed", instead of the three blocking syscalls it used to take.
+            let outputStat = null;
+            try {
+                outputStat = fs.statSync(candidatePath);
+            } catch { }
+
+            if (!outputStat) {
+                outputPath = candidatePath;
+                reservedOutputPaths.add(outputPath);
+                break;
+            }
+
+            if (!renameOnly && isAlreadyProcessed(file.path, candidatePath, outputStat, inputStat)) {
                 reservedOutputPaths.add(candidatePath);
                 compressionState.processed++;
                 compressionState.results.success++;
-                const outputStat = fs.statSync(candidatePath);
                 compressionState.results.totalOriginal += originalSize;
                 compressionState.results.totalCompressed += outputStat.size;
                 sendSSE('file-skipped', { index, name: file.name, sizeSaved: originalSize - outputStat.size });
@@ -395,20 +467,11 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
                 return;
             }
 
-            if (!reservedOutputPaths.has(candidatePath) && !fs.existsSync(candidatePath)) {
-                outputPath = candidatePath;
-                reservedOutputPaths.add(outputPath);
-                break;
-            }
-
             counter++;
         }
 
         // Ensure parent directory exists
-        const parentDir = path.dirname(outputPath);
-        if (!fs.existsSync(parentDir)) {
-            fs.mkdirSync(parentDir, { recursive: true });
-        }
+        ensureDirCached(path.dirname(outputPath));
 
         sendSSE('file-start', { index, name: file.name, type: file.type });
 
@@ -434,11 +497,12 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
             } else if (file.type === 'image') {
                 result = await compressImage(file.path, outputPath, { quality });
             } else {
-                // Get video info for adaptive CRF
+                // Get video info for adaptive CRF. probeVideo reuses the ffprobe
+                // result already fetched when resolving this file's capture date.
                 let adaptiveCrf = crf;
                 try {
-                    const videoInfo = await getVideoInfo(file.path);
-                    adaptiveCrf = getAdaptiveCrf(crf, videoInfo);
+                    const videoInfo = await probeVideo(file.path);
+                    if (videoInfo) adaptiveCrf = getAdaptiveCrf(crf, videoInfo);
                 } catch {}
 
                 result = await compressVideo(file.path, outputPath, {
@@ -447,7 +511,7 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
                     threads: THREADS_PER_VIDEO,
                     shouldCancel: () => compressionState.shouldCancel,
                     onProgress: (progress) => {
-                        sendSSE('file-progress', { index, percent: progress.percent || 0 });
+                        sendFileProgress(index, progress.percent || 0);
                     }
                 });
             }
@@ -489,7 +553,10 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
                     setFileMetadata(file.path, outputPath);
                 } catch { }
             }
-            sendSSE('file-error', { index, error: error.message || 'Unknown error', file: file.name, path: file.path });
+            // errorMsg, not error.message: compressVideo rejects with a plain
+            // object carrying `error`, so error.message is undefined and every
+            // video failure would otherwise surface as "Unknown error".
+            sendSSE('file-error', { index, error: errorMsg || 'Unknown error', file: file.name, path: file.path });
 
             // Track failed file for retry
             compressionState.failedFiles.push({
@@ -498,7 +565,7 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
                 type: file.type,
                 size: file.size,
                 sizeFormatted: file.sizeFormatted,
-                error: error.message || 'Unknown error',
+                error: errorMsg || 'Unknown error',
                 index
             });
 
@@ -576,11 +643,31 @@ async function processFiles(files, outputFolder, inputFolder, encoder, imageForm
 
     console.log(`Processing ${images.length} images (${IMAGE_CONCURRENCY} concurrent) and ${videos.length} videos (${VIDEO_CONCURRENCY} concurrent)`);
 
-    // Process images first (faster, more parallelizable) using worker pool
-    await processWithWorkerPool(images, IMAGE_CONCURRENCY);
+    // Images are CPU-bound (Sharp) while GPU encoders are mostly idle waiting on
+    // the encode ASIC, so the two pools can overlap and finish in the time the
+    // slower one alone would take. Software encoders compete for the same cores,
+    // so those stay sequential.
+    let usesHardwareEncoder = false;
+    try {
+        const encoderConfig = await getEncoderConfig(encoder);
+        usesHardwareEncoder = ['nvenc', 'amf', 'qsv'].includes(encoderConfig.type);
+    } catch { }
 
-    // Then process videos using worker pool
-    await processWithWorkerPool(videos, VIDEO_CONCURRENCY);
+    if (usesHardwareEncoder && images.length > 0 && videos.length > 0) {
+        console.log(`   Overlapping image and video pools (${encoder} is hardware accelerated)`);
+        // Both pools now share the CPU, so leave headroom for the image workers.
+        THREADS_PER_VIDEO = Math.max(1, Math.floor(THREADS_PER_VIDEO / 2));
+        await Promise.all([
+            processWithWorkerPool(images, IMAGE_CONCURRENCY),
+            processWithWorkerPool(videos, VIDEO_CONCURRENCY)
+        ]);
+    } else {
+        // Process images first (faster, more parallelizable) using worker pool
+        await processWithWorkerPool(images, IMAGE_CONCURRENCY);
+
+        // Then process videos using worker pool
+        await processWithWorkerPool(videos, VIDEO_CONCURRENCY);
+    }
 
     // Done
     compressionState.results.endTime = Date.now();
@@ -745,9 +832,15 @@ app.get('/api/events', (req, res) => {
 
     sseClients.push(res);
 
-    req.on('close', () => {
+    const removeClient = () => {
         sseClients = sseClients.filter(client => client !== res);
-    });
+    };
+
+    req.on('close', removeClient);
+    // Without this handler a socket reset (window reload mid-compression)
+    // surfaces as an unhandled 'error' event and takes the process down.
+    res.on('error', removeClient);
+    req.on('error', removeClient);
 });
 
 // ============ Start Server ============
@@ -759,7 +852,7 @@ function findAvailablePort(startPort, maxAttempts = 10) {
 
         function tryPort(port) {
             const server = net.createServer();
-            server.listen(port, () => {
+            server.listen(port, HOST, () => {
                 server.close();
                 resolve(port);
             });
@@ -782,7 +875,7 @@ const startServer = async () => {
     return new Promise((resolve, reject) => {
         findAvailablePort(BASE_PORT)
             .then((PORT) => {
-                const server = app.listen(PORT, async () => {
+                const server = app.listen(PORT, HOST, async () => {
                     logger.info(`\n🗜️  Media Compressor GUI`);
                     logger.info(`   Server running at: http://localhost:${PORT}`);
                     if (PORT !== BASE_PORT) {
