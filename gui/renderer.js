@@ -1,106 +1,380 @@
-// ============ Web Local GUI - Frontend ============
-// Uses fetch API to communicate with Express server
+// ============ Tactile Studio Workbench - Frontend ============
 
-// ============ State ============
 let files = [];
 let isCompressing = false;
-let availableEncoders = { nvenc: false, qsv: false, cpu: true };
+let availableEncoders = { nvenc: false, amf: false, qsv: false, x264: true, x265: true };
 let eventSource = null;
 let presets = [];
 let performanceInterval = null;
-const isElectronMode = typeof window.electronAPI !== 'undefined';
+let jobStartedAt = 0;
 
-// ============ DOM Elements ============
+// Cached DOM references for rendered queue rows (avoids querySelector per SSE tick)
+const rowElements = new Map();
+const pendingRowUpdates = new Map();
+let rowUpdateFrame = null;
+
+const MAX_RENDERED_ROWS = 2000;
+const SCROLL_THROTTLE_MS = 450;
+let lastScrollAt = 0;
+
 const $ = (id) => document.getElementById(id);
 
-// ============ Initialize ============
+const ICONS = {
+    image: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+    video: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>',
+    system: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+    dark: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+    light: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>'
+};
+
+// ============ Initialization ============
 async function init() {
-    console.log('Initializing GUI...');
-
-    // Folder selection
-    $('btn-input-browse').onclick = async () => await promptForPath('input');
-    $('btn-output-browse').onclick = async () => await promptForPath('output');
-
-    // Scan button
+    $('btn-input-browse').onclick = () => promptForPath('input');
+    $('btn-output-browse').onclick = () => promptForPath('output');
     $('btn-scan').onclick = scanFolder;
 
-    // Sliders
-    $('quality-slider').oninput = () => $('quality-value').textContent = $('quality-slider').value;
-    $('crf-slider').oninput = () => $('crf-value').textContent = $('crf-slider').value;
+    $('input-folder').addEventListener('input', () => {
+        updateStartButton();
+        updatePathPreview();
+    });
+    $('input-folder').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && $('input-folder').value.trim()) {
+            scanFolder();
+        }
+    });
+    $('output-folder').addEventListener('input', () => {
+        updateStartButton();
+        updatePathPreview();
+    });
 
-    // Action buttons
+    $('quality-slider').oninput = updateQualityLabel;
+    $('crf-slider').oninput = updateCrfLabel;
+    updateQualityLabel();
+    updateCrfLabel();
+
     $('btn-start').onclick = startCompression;
     $('btn-cancel').onclick = cancelCompression;
 
-    // Make folder inputs editable
-    $('input-folder').removeAttribute('readonly');
-    $('output-folder').removeAttribute('readonly');
-    $('input-folder').placeholder = 'Paste folder path here, e.g. D:\\Photos';
-    $('output-folder').placeholder = 'Paste output path here, e.g. D:\\Photos\\compressed';
+    // Segmented controls & filter radios
+    setupRadioControls();
 
-    // Detect encoders
-    await detectEncoders();
-
-    // Initialize Theme
-    initTheme();
-
-    // Connect SSE for real-time updates
-    connectSSE();
-
-    // Modal Interaction
+    // Summary modal
     $('btn-close-modal').onclick = closeModal;
     $('btn-modal-ok').onclick = closeModal;
-    $('btn-view-failed').onclick = () => { closeModal(); showFailedFiles(); };
-
-    // Click outside to close
+    $('btn-view-failed').onclick = () => {
+        closeModal();
+        showFailedFiles();
+    };
     $('summary-modal').addEventListener('click', (e) => {
         if (e.target.id === 'summary-modal') closeModal();
     });
 
-    // Retry failed
+    // Failed files
     $('btn-retry-failed').onclick = retryFailedFiles;
+    $('btn-hide-failed').onclick = () => {
+        $('failed-files-section').style.display = 'none';
+    };
 
     // Presets
     $('btn-save-preset').onclick = savePreset;
     $('btn-update-preset').onclick = updatePreset;
     $('btn-copy-preset').onclick = copyPreset;
     $('btn-delete-preset').onclick = deletePreset;
-    $('btn-toggle-metrics').onclick = toggleMetricsPanel;
     $('preset-select').onchange = loadPreset;
+    updatePresetActionState();
 
-    // Drag and drop
+    // Metrics
+    $('btn-toggle-metrics').onclick = toggleMetricsPanel;
+
+    // Theme & SSE & Drag/Drop
+    initTheme();
+    connectSSE();
     setupDragAndDrop();
 
-    // Load presets
+    await detectEncoders();
     await loadPresetsFromServer();
-
-    // Check for resumable job
     await checkResumableJob();
 
-    // Start performance metrics
-    startPerformanceMetrics();
+    updatePathPreview();
+    updateStartButton();
+}
 
-    console.log('GUI initialized');
+// ============ Radio & Output Structure Sync ============
+function setupRadioControls() {
+    // Output structure segmented control
+    document.querySelectorAll('input[name="output-structure"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            syncOutputStructureFromRadio(radio.value);
+            updatePathPreview();
+        });
+    });
+
+    $('category-by-year').addEventListener('change', () => {
+        if (!$('category-by-year').checked && !$('category-by-month').checked) {
+            $('category-by-year').checked = true;
+        }
+        updatePathPreview();
+    });
+    $('category-by-month').addEventListener('change', () => {
+        if (!$('category-by-year').checked && !$('category-by-month').checked) {
+            $('category-by-month').checked = true;
+        }
+        updatePathPreview();
+    });
+    $('rename-only').addEventListener('change', updatePathPreview);
+
+    // Image format segmented control
+    document.querySelectorAll('input[name="image-format"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            syncSegmentedActive('image-format');
+            updatePathPreview();
+        });
+    });
+
+    // Video encoder grid
+    document.querySelectorAll('input[name="encoder"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            syncEncoderActive();
+        });
+    });
+
+    // Media type filter pills
+    document.querySelectorAll('input[name="file-type"]').forEach(radio => {
+        radio.addEventListener('change', () => {
+            syncFilterPills();
+            syncCardDimming();
+            if (files.length > 0 && $('input-folder').value.trim()) {
+                scanFolder();
+            }
+        });
+    });
+
+    syncSegmentedActive('image-format');
+    syncFilterPills();
+    syncCardDimming();
+}
+
+function syncOutputStructureFromRadio(mode) {
+    document.querySelectorAll('[data-structure]').forEach(el => {
+        el.classList.toggle('active', el.dataset.structure === mode);
+    });
+
+    const dateRow = $('date-options-row');
+    if (mode === 'flatten') {
+        $('flatten-output').checked = true;
+        $('category-by-year').checked = false;
+        $('category-by-month').checked = false;
+        dateRow.style.display = 'none';
+    } else if (mode === 'date') {
+        $('flatten-output').checked = false;
+        if (!$('category-by-year').checked && !$('category-by-month').checked) {
+            $('category-by-year').checked = true;
+        }
+        dateRow.style.display = 'flex';
+    } else {
+        $('flatten-output').checked = false;
+        $('category-by-year').checked = false;
+        $('category-by-month').checked = false;
+        dateRow.style.display = 'none';
+    }
+}
+
+function applyStructureFromCheckboxes(flatten, byYear, byMonth) {
+    let mode = 'preserve';
+    if (flatten) {
+        mode = 'flatten';
+    } else if (byYear || byMonth) {
+        mode = 'date';
+    }
+
+    const radio = document.querySelector(`input[name="output-structure"][value="${mode}"]`);
+    if (radio) radio.checked = true;
+
+    document.querySelectorAll('[data-structure]').forEach(el => {
+        el.classList.toggle('active', el.dataset.structure === mode);
+    });
+
+    $('flatten-output').checked = Boolean(flatten);
+    $('category-by-year').checked = Boolean(byYear);
+    $('category-by-month').checked = Boolean(byMonth);
+    $('date-options-row').style.display = mode === 'date' ? 'flex' : 'none';
+    updatePathPreview();
+}
+
+function syncSegmentedActive(name) {
+    document.querySelectorAll(`input[name="${name}"]`).forEach(r => {
+        r.closest('.seg-item')?.classList.toggle('active', r.checked);
+    });
+}
+
+function syncEncoderActive() {
+    document.querySelectorAll('input[name="encoder"]').forEach(r => {
+        r.closest('.encoder-option')?.classList.toggle('active', r.checked);
+    });
+}
+
+function syncFilterPills() {
+    document.querySelectorAll('input[name="file-type"]').forEach(r => {
+        r.closest('.type-radio')?.classList.toggle('active', r.checked);
+    });
+}
+
+function syncCardDimming() {
+    const type = document.querySelector('input[name="file-type"]:checked')?.value || 'all';
+    const imgPanel = $('image-settings-panel');
+    const vidPanel = $('video-settings-panel');
+    const imgStatus = $('image-card-status');
+    const vidStatus = $('video-card-status');
+
+    imgPanel.classList.toggle('dimmed', type === 'video');
+    vidPanel.classList.toggle('dimmed', type === 'image');
+    imgStatus.textContent = type === 'video' ? 'Skipped' : 'Active';
+    vidStatus.textContent = type === 'image' ? 'Skipped' : 'Active';
+}
+
+// ============ Human-Friendly Slider Labels & Path Preview ============
+function updateQualityLabel() {
+    const slider = $('quality-slider');
+    const val = parseInt(slider.value, 10);
+    const pct = ((val - 1) / 99) * 100;
+    slider.style.setProperty('--slider-fill', `${pct}%`);
+
+    let tier = 'Balanced';
+    if (val >= 92) tier = 'Archival';
+    else if (val >= 82) tier = 'High';
+    else if (val >= 65) tier = 'Compact';
+    else tier = 'Tiny';
+
+    $('quality-badge').innerHTML = `<strong id="quality-value">${val}</strong> · ${tier}`;
+}
+
+function updateCrfLabel() {
+    const slider = $('crf-slider');
+    const val = parseInt(slider.value, 10);
+    const pct = (val / 51) * 100;
+    slider.style.setProperty('--slider-fill', `${pct}%`);
+
+    let tier = 'Balanced';
+    if (val <= 17) tier = 'Visually Lossless';
+    else if (val <= 21) tier = 'High Quality';
+    else if (val <= 25) tier = 'Balanced';
+    else if (val <= 30) tier = 'Compact';
+    else tier = 'Small';
+
+    $('crf-badge').innerHTML = `<strong id="crf-value">${val}</strong> · ${tier}`;
+}
+
+function updatePathPreview() {
+    const outDir = ($('output-folder').value || 'D:\\Photos\\compressed').trim().replace(/[\\/]+$/, '');
+    const structure = document.querySelector('input[name="output-structure"]:checked')?.value || 'preserve';
+    const format = document.querySelector('input[name="image-format"]:checked')?.value || 'webp';
+    const renameOnly = $('rename-only').checked;
+    const ext = renameOnly ? 'jpg' : format;
+    const sampleName = `20260412-183012.${ext}`;
+
+    const parts = [outDir];
+    if (structure === 'preserve') {
+        parts.push('Album', sampleName);
+    } else if (structure === 'date') {
+        if ($('category-by-year').checked) parts.push('2026');
+        if ($('category-by-month').checked) parts.push('202604__');
+        parts.push(sampleName);
+    } else {
+        parts.push(sampleName);
+    }
+
+    $('path-preview-code').textContent = parts.join('\\');
+}
+
+// ============ Toasts & Dialogs (Replacing alert/prompt/confirm) ============
+function showToast(message, type = 'info') {
+    const container = $('toast-container');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.2s ease';
+        setTimeout(() => toast.remove(), 220);
+    }, 3400);
+}
+
+function openDialog({ title, message, inputDefault = null, confirmText = 'Confirm', danger = false }) {
+    return new Promise((resolve) => {
+        const modal = $('dialog-modal');
+        const input = $('dialog-input');
+        const confirmBtn = $('dialog-confirm');
+
+        $('dialog-title').textContent = title;
+        $('dialog-message').textContent = message;
+        confirmBtn.textContent = confirmText;
+        confirmBtn.className = danger ? 'btn-danger' : 'btn-primary';
+        confirmBtn.style.height = '36px';
+        confirmBtn.style.padding = '0 18px';
+
+        if (inputDefault !== null) {
+            input.style.display = 'block';
+            input.value = inputDefault;
+        } else {
+            input.style.display = 'none';
+            input.value = '';
+        }
+
+        const close = (result) => {
+            modal.classList.remove('show');
+            setTimeout(() => { modal.style.display = 'none'; }, 180);
+            document.removeEventListener('keydown', onKey);
+            resolve(result);
+        };
+
+        const onConfirm = () => {
+            close(inputDefault !== null ? input.value : true);
+        };
+
+        const onKey = (e) => {
+            if (e.key === 'Escape') close(null);
+            if (e.key === 'Enter' && inputDefault !== null) onConfirm();
+        };
+
+        $('dialog-cancel').onclick = () => close(null);
+        confirmBtn.onclick = onConfirm;
+        modal.onclick = (e) => {
+            if (e.target === modal) close(null);
+        };
+        document.addEventListener('keydown', onKey);
+
+        modal.style.display = 'flex';
+        modal.offsetHeight;
+        modal.classList.add('show');
+
+        if (inputDefault !== null) {
+            setTimeout(() => {
+                input.focus();
+                input.select();
+            }, 20);
+        }
+    });
 }
 
 // ============ Drag and Drop ============
 function setupDragAndDrop() {
     const dropZone = $('drop-zone');
     const overlay = $('drop-overlay');
-
     if (!dropZone) return;
 
     let dragDepth = 0;
 
     const showOverlay = () => {
         overlay.style.display = 'flex';
-        dropZone.style.borderColor = 'var(--accent-purple)';
     };
 
     const hideOverlay = () => {
         dragDepth = 0;
         overlay.style.display = 'none';
-        dropZone.style.borderColor = '';
     };
 
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -136,7 +410,6 @@ function setupDragAndDrop() {
             return;
         }
 
-        // Fallback: try to get path from data
         const text = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list');
         if (text) {
             const textPaths = getPathsFromDropText(text);
@@ -147,22 +420,15 @@ function setupDragAndDrop() {
         }
 
         if (e.dataTransfer.files?.length && !window.electronAPI?.getPathForFile) {
-            alert('Dropping individual files requires the desktop app. Browsers do not expose local file paths to the server.');
+            showToast('Dropping individual files requires the Desktop App. Paste a folder path in browser mode.', 'warning');
         }
     });
 }
 
 function getDroppedPaths(dataTransfer) {
     if (!dataTransfer?.files?.length) return [];
-
     return Array.from(dataTransfer.files)
-        .map(file => {
-            if (window.electronAPI?.getPathForFile) {
-                return window.electronAPI.getPathForFile(file);
-            }
-
-            return file.path || '';
-        })
+        .map(file => (window.electronAPI?.getPathForFile ? window.electronAPI.getPathForFile(file) : (file.path || '')))
         .filter(Boolean);
 }
 
@@ -180,7 +446,7 @@ async function handleDroppedPaths(paths) {
 
     if (!response.ok) {
         const error = await response.json();
-        alert('Error reading dropped files: ' + (error.error || 'Unknown error'));
+        showToast('Error reading dropped files: ' + (error.error || 'Unknown error'), 'error');
         return;
     }
 
@@ -197,7 +463,9 @@ async function handleDroppedPaths(paths) {
         }
 
         renderFileList();
+        updatePathPreview();
         updateStartButton();
+        showToast(`Loaded ${files.length} file(s)`, 'success');
         return;
     }
 
@@ -208,11 +476,12 @@ async function handleDroppedPaths(paths) {
         }
         files = [];
         renderFileList();
+        updatePathPreview();
         updateStartButton();
         return;
     }
 
-    alert('No supported image or video files were dropped.');
+    showToast('No supported image or video files found in drop.', 'warning');
 }
 
 function getPathsFromDropText(text) {
@@ -233,7 +502,6 @@ function getPathsFromDropText(text) {
 
 function getCommonFolder(filePaths) {
     if (filePaths.length === 0) return '';
-
     const separators = /[\\/]/;
     const folders = filePaths.map(filePath => filePath.split(separators).slice(0, -1));
     const first = folders[0];
@@ -252,38 +520,54 @@ function getCommonFolder(filePaths) {
     return first.slice(0, length).join('\\');
 }
 
-// ============ SSE Connection ============
+// ============ SSE Connection & Batched Row Rendering ============
+function queueRowUpdate(index, status, extras = {}) {
+    const prev = pendingRowUpdates.get(index);
+    // Do not overwrite a final state in the same frame with an earlier progress tick
+    if (prev && (prev.status === 'completed' || prev.status === 'failed' || prev.status === 'skipped') && status === 'processing') {
+        return;
+    }
+    pendingRowUpdates.set(index, { status, extras });
+
+    if (rowUpdateFrame !== null) return;
+    rowUpdateFrame = requestAnimationFrame(() => {
+        rowUpdateFrame = null;
+        for (const [idx, update] of pendingRowUpdates.entries()) {
+            updateFileStatus(idx, update.status, update.extras);
+        }
+        pendingRowUpdates.clear();
+    });
+}
+
 function connectSSE() {
     eventSource = new EventSource('/api/events');
 
     eventSource.addEventListener('file-start', (e) => {
         const data = JSON.parse(e.data);
-        updateFileStatus(data.index, 'processing');
+        queueRowUpdate(data.index, 'processing');
         scrollToFile(data.index);
     });
 
     eventSource.addEventListener('file-progress', (e) => {
         const data = JSON.parse(e.data);
-        updateFileStatus(data.index, 'processing', { progress: data.percent });
+        queueRowUpdate(data.index, 'processing', { progress: data.percent });
     });
 
     eventSource.addEventListener('file-complete', (e) => {
         const data = JSON.parse(e.data);
-        updateFileStatus(data.index, 'completed', { savings: data.savings });
+        queueRowUpdate(data.index, 'completed', { savings: data.savings });
     });
 
     eventSource.addEventListener('file-skipped', (e) => {
         const data = JSON.parse(e.data);
-        updateFileStatus(data.index, 'skipped', { savings: data.sizeSaved });
+        queueRowUpdate(data.index, 'skipped', { savings: data.sizeSaved });
     });
 
     eventSource.addEventListener('file-error', (e) => {
         const data = JSON.parse(e.data);
-        updateFileStatus(data.index, 'failed', { error: data.error });
+        queueRowUpdate(data.index, 'failed', { error: data.error });
     });
 
-    // Overall progress fires once per completed file. On a large library that is
-    // thousands of events, so the DOM write is coalesced to one per frame.
     let pendingOverall = null;
     let overallFrame = null;
 
@@ -295,25 +579,49 @@ function connectSSE() {
             overallFrame = null;
             const data = pendingOverall;
             if (!data) return;
+
             $('progress-bar').style.width = `${data.percent}%`;
             $('progress-text').textContent = `${data.percent.toFixed(0)}%`;
             $('progress-count').textContent = `${data.processed}/${data.total}`;
             $('metric-processed').textContent = data.processed;
+
+            let etaText = '';
+            if (data.processed >= 2 && data.processed < data.total && jobStartedAt > 0) {
+                const elapsedSec = (Date.now() - jobStartedAt) / 1000;
+                const rate = data.processed / elapsedSec;
+                if (rate > 0) {
+                    const remainingSec = (data.total - data.processed) / rate;
+                    etaText = ` · ~${formatDuration(remainingSec)} left`;
+                }
+            }
+            $('action-status-text').textContent = `Compressing ${data.processed} of ${data.total}${etaText}`;
         });
     });
 
     eventSource.addEventListener('complete', (e) => {
+        if (overallFrame !== null) {
+            cancelAnimationFrame(overallFrame);
+            overallFrame = null;
+        }
+        pendingOverall = null;
         const data = JSON.parse(e.data);
-        showSummary(data);
         finishCompression();
-        updateMetrics();
+        showSummary(data);
+        if (isMetricsOpen()) updateMetrics();
+        updateRetryButtonState();
     });
 
-    eventSource.addEventListener('cancelled', (e) => {
-        const data = JSON.parse(e.data);
-        $('progress-text').textContent = 'Cancelled';
-        $('progress-bar').style.width = '0%';
+    eventSource.addEventListener('cancelled', () => {
+        if (overallFrame !== null) {
+            cancelAnimationFrame(overallFrame);
+            overallFrame = null;
+        }
+        pendingOverall = null;
         finishCompression();
+        $('action-status-text').textContent = 'Compression stopped. Remaining files saved for resume.';
+        showToast('Compression stopped', 'warning');
+        checkResumableJob();
+        updateRetryButtonState();
     });
 }
 
@@ -323,42 +631,44 @@ async function detectEncoders() {
         const response = await fetch('/api/encoders');
         availableEncoders = await response.json();
 
-        $('nvenc-badge').textContent = availableEncoders.nvenc ? 'GPU' : 'N/A';
-        $('nvenc-badge').className = 'badge ' + (availableEncoders.nvenc ? 'available' : 'unavailable');
+        const setBadge = (id, available, textOn, textOff) => {
+            const el = $(id);
+            if (!el) return;
+            el.textContent = available ? textOn : textOff;
+            el.className = 'enc-badge ' + (available ? 'available' : 'unavailable');
+        };
 
-        $('amf-badge').textContent = availableEncoders.amf ? 'GPU' : 'N/A';
-        $('amf-badge').className = 'badge ' + (availableEncoders.amf ? 'available' : 'unavailable');
+        setBadge('nvenc-badge', availableEncoders.nvenc, 'GPU', 'N/A');
+        setBadge('amf-badge', availableEncoders.amf, 'GPU', 'N/A');
+        setBadge('qsv-badge', availableEncoders.qsv, 'iGPU', 'N/A');
 
-        $('qsv-badge').textContent = availableEncoders.qsv ? 'iGPU' : 'N/A';
-        $('qsv-badge').className = 'badge ' + (availableEncoders.qsv ? 'available' : 'unavailable');
-
-        const disableOption = (id, inputVal, available) => {
-            const input = document.querySelector(`input[value="${inputVal}"]`);
-            const label = $(id);
+        const toggleEncoderOption = (labelId, value, available) => {
+            const input = document.querySelector(`input[name="encoder"][value="${value}"]`);
+            const label = $(labelId);
             if (input && label) {
                 input.disabled = !available;
-                label.style.opacity = available ? '1' : '0.5';
-                label.style.cursor = available ? 'pointer' : 'not-allowed';
+                label.classList.toggle('disabled', !available);
             }
         };
 
-        disableOption('encoder-nvenc-label', 'nvenc', availableEncoders.nvenc);
-        disableOption('encoder-amf-label', 'amf', availableEncoders.amf);
-        disableOption('encoder-qsv-label', 'qsv', availableEncoders.qsv);
+        toggleEncoderOption('encoder-nvenc-label', 'nvenc', availableEncoders.nvenc);
+        toggleEncoderOption('encoder-amf-label', 'amf', availableEncoders.amf);
+        toggleEncoderOption('encoder-qsv-label', 'qsv', availableEncoders.qsv);
 
         let bestEncoder = 'x264';
         if (availableEncoders.nvenc) bestEncoder = 'nvenc';
         else if (availableEncoders.amf) bestEncoder = 'amf';
         else if (availableEncoders.qsv) bestEncoder = 'qsv';
 
-        const radioToSelect = document.querySelector(`input[value="${bestEncoder}"]`);
+        const radioToSelect = document.querySelector(`input[name="encoder"][value="${bestEncoder}"]`);
         if (radioToSelect) radioToSelect.checked = true;
+        syncEncoderActive();
     } catch (error) {
         console.error('Failed to detect encoders:', error);
     }
 }
 
-// ============ Folder Selection ============
+// ============ Folder Selection & Auto-Scan ============
 async function promptForPath(type) {
     let newPath = null;
 
@@ -366,10 +676,12 @@ async function promptForPath(type) {
         newPath = await window.electronAPI.selectFolder();
     } else {
         const currentValue = type === 'input' ? $('input-folder').value : $('output-folder').value;
-        newPath = prompt(
-            type === 'input' ? 'Enter input folder path (e.g. D:\\Photos):' : 'Enter output folder path:',
-            currentValue
-        );
+        newPath = await openDialog({
+            title: type === 'input' ? 'Source Folder Path' : 'Destination Folder Path',
+            message: 'Enter a local folder path:',
+            inputDefault: currentValue || 'D:\\Photos',
+            confirmText: 'Select'
+        });
     }
 
     if (newPath) {
@@ -378,35 +690,42 @@ async function promptForPath(type) {
             if (!$('output-folder').value) {
                 $('output-folder').value = newPath + '\\compressed';
             }
+            updatePathPreview();
+            updateStartButton();
+            await scanFolder();
         } else {
             $('output-folder').value = newPath;
+            updatePathPreview();
+            updateStartButton();
         }
-        updateStartButton();
     }
 }
 
 // ============ File Scanning ============
 async function scanFolder() {
     const folderPath = $('input-folder').value.trim();
-
     if (!folderPath) {
-        alert('Please enter an input folder path first');
+        showToast('Enter or select a Source Folder first.', 'warning');
         return;
     }
 
+    if (!$('output-folder').value.trim()) {
+        $('output-folder').value = folderPath.replace(/[\\/]+$/, '') + '\\compressed';
+        updatePathPreview();
+    }
+
     $('btn-scan').disabled = true;
-    $('btn-scan').textContent = 'Scanning...';
+    $('action-status-text').textContent = 'Scanning folder...';
 
     try {
         const fileType = document.querySelector('input[name="file-type"]:checked').value;
-
         const response = await fetch('/api/scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                folderPath: folderPath,
+                folderPath,
                 recursive: $('recursive-scan').checked,
-                fileType: fileType
+                fileType
             })
         });
 
@@ -416,20 +735,18 @@ async function scanFolder() {
         }
 
         files = await response.json();
-        files.forEach(f => f.status = 'pending');
+        files.forEach(f => { f.status = 'pending'; });
 
         renderFileList();
         updateStartButton();
     } catch (error) {
-        alert('Error scanning folder: ' + error.message);
+        showToast('Scan failed: ' + error.message, 'error');
+        $('action-status-text').textContent = 'Scan failed';
     } finally {
         $('btn-scan').disabled = false;
-        $('btn-scan').textContent = 'Scan Folder';
     }
 }
 
-// A filename may legitimately contain <, > or quotes, which would otherwise
-// break out of the row markup below.
 function escapeHtml(text) {
     return String(text ?? '')
         .replace(/&/g, '&amp;')
@@ -438,204 +755,230 @@ function escapeHtml(text) {
         .replace(/"/g, '&quot;');
 }
 
-// Each row is four elements, so a full render of a very large library costs
-// tens of thousands of nodes and seconds of layout. Rows past this cap are not
-// built; updateFileStatus already tolerates a missing row.
-const MAX_RENDERED_ROWS = 2000;
-
 function renderFileList() {
     const fileList = $('file-list');
     const fileCount = $('file-count');
+    rowElements.clear();
 
     if (files.length === 0) {
-        fileList.innerHTML = '<div class="file-list-empty">No supported files found</div>';
-        fileCount.textContent = '';
+        fileList.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon" aria-hidden="true">${ICONS.image}</div>
+                <div class="empty-title">No matching media files found</div>
+                <div class="empty-desc">Try enabling "Include subfolders" or switching the media filter to All.</div>
+            </div>
+        `;
+        fileCount.textContent = '0 files';
+        updateRetryButtonState();
         return;
     }
 
     let imageCount = 0;
+    let totalBytes = 0;
     for (const f of files) {
         if (f.type === 'image') imageCount++;
+        totalBytes += f.size || 0;
     }
     const videoCount = files.length - imageCount;
-    fileCount.textContent = `${files.length} files (${imageCount} images, ${videoCount} videos)`;
+    fileCount.textContent = `${files.length} files (${imageCount} img, ${videoCount} vid) · ${formatBytes(totalBytes)}`;
 
     const visible = files.length > MAX_RENDERED_ROWS ? files.slice(0, MAX_RENDERED_ROWS) : files;
 
     let html = visible.map((file, index) => `
         <div class="file-row" id="file-${index}" data-index="${index}">
             <div class="col-name">
-                <span class="file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
+                <span class="file-type-icon ${file.type === 'video' ? 'video' : ''}" aria-hidden="true">
+                    ${file.type === 'image' ? ICONS.image : ICONS.video}
+                </span>
                 <span class="file-name-text" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
             </div>
-            <div class="col-size">${escapeHtml(file.sizeFormatted)}</div>
+            <div class="col-size">${escapeHtml(file.sizeFormatted || formatBytes(file.size || 0))}</div>
             <div class="col-progress">
                 <div class="mini-progress-track">
                     <div class="mini-progress-bar" style="width: 0%"></div>
                 </div>
             </div>
-            <div class="col-actions">
-            </div>
         </div>
     `).join('');
 
     if (files.length > MAX_RENDERED_ROWS) {
-        html += `<div class="file-list-empty">Showing first ${MAX_RENDERED_ROWS} of ${files.length} files. All ${files.length} will be processed.</div>`;
+        html += `<div class="empty-desc" style="padding: 12px; text-align: center; max-width: none;">Showing first ${MAX_RENDERED_ROWS} of ${files.length} files. All ${files.length} will be processed.</div>`;
     }
 
     fileList.innerHTML = html;
-}
 
-function getStatusText(status) {
-    switch (status) {
-        case 'pending': return 'Waiting';
-        case 'processing': return 'Processing...';
-        case 'completed': return 'Done';
-        case 'failed': return 'Failed';
-        default: return status;
+    // Cache row element references once
+    for (let i = 0; i < visible.length; i++) {
+        const row = document.getElementById(`file-${i}`);
+        if (row) {
+            const colProgress = row.querySelector('.col-progress');
+            const progressBar = row.querySelector('.mini-progress-bar');
+            rowElements.set(i, { row, colProgress, progressBar });
+        }
     }
+
+    updateRetryButtonState();
 }
 
 function updateFileStatus(index, status, extras = {}) {
     if (!files[index]) return;
 
     files[index].status = status;
-    files[index].error = extras.error || files[index].error;
-    files[index].savings = extras.savings || files[index].savings;
+    if (extras.error !== undefined) files[index].error = extras.error;
+    if (extras.savings !== undefined) files[index].savings = extras.savings;
 
-    const fileRow = document.getElementById(`file-${index}`);
-    if (!fileRow) return;
+    const cached = rowElements.get(index);
+    if (!cached) return;
 
-    const colProgress = fileRow.querySelector('.col-progress');
+    const { row, colProgress } = cached;
     const ensureProgressBar = () => {
-        let progressBar = fileRow.querySelector('.mini-progress-bar');
-        if (!progressBar) {
+        if (!cached.progressBar || !cached.progressBar.isConnected) {
             colProgress.innerHTML = `
                 <div class="mini-progress-track">
                     <div class="mini-progress-bar" style="width: 0%"></div>
                 </div>
+                <span class="row-pct"></span>
             `;
-            progressBar = fileRow.querySelector('.mini-progress-bar');
+            cached.progressBar = colProgress.querySelector('.mini-progress-bar');
+            cached.pctLabel = colProgress.querySelector('.row-pct');
         }
-        return progressBar;
+        return cached.progressBar;
     };
 
     if (status === 'pending') {
-        const progressBar = ensureProgressBar();
-        fileRow.classList.remove('processing-active', 'failed-active');
-        progressBar.style.width = '0%';
-        progressBar.style.background = '';
+        row.classList.remove('processing-active', 'failed-active');
+        const bar = ensureProgressBar();
+        bar.style.width = '0%';
+        bar.style.background = '';
+        if (cached.pctLabel) cached.pctLabel.textContent = '';
         return;
     }
 
     if (status === 'processing') {
-        const progressBar = ensureProgressBar();
-        fileRow.classList.add('processing-active');
-        fileRow.classList.remove('failed-active');
+        row.classList.add('processing-active');
+        row.classList.remove('failed-active');
+        const bar = ensureProgressBar();
         if (extras.progress !== undefined) {
-            progressBar.style.width = `${extras.progress}%`;
+            bar.style.width = `${extras.progress}%`;
+            if (cached.pctLabel) cached.pctLabel.textContent = `${extras.progress}%`;
         }
-    } else {
-        fileRow.classList.remove('processing-active');
-    }
-
-    if (status === 'completed') {
-        const progressBar = ensureProgressBar();
-        progressBar.style.width = '100%';
-        if (extras.savings) {
-            colProgress.innerHTML = `<span class="file-savings" style="color: var(--accent-success); font-weight: 600;">✓ ${extras.savings}</span>`;
-        }
-
-        // Preview button removed per user request
-    } else if (status === 'skipped') {
-        const savedText = typeof extras.savings === 'number' ? `${formatBytes(extras.savings)} saved` : extras.savings;
-        colProgress.innerHTML = `<span class="file-savings" style="color: var(--text-secondary); font-weight: 600;">Skipped${savedText ? ` (${savedText})` : ''}</span>`;
-    } else if (status === 'failed') {
-        fileRow.classList.add('failed-active');
-        const progressBar = ensureProgressBar();
-        progressBar.style.background = 'var(--accent-danger)';
-        progressBar.style.width = '100%';
-        colProgress.innerHTML = `<span class="file-error-text" style="color: var(--accent-danger); font-size: 11px;" title="${extras.error || 'Unknown error'}">✗ Failed</span>`;
-    }
-}
-
-// With up to a dozen workers running, every one of them requesting a smooth
-// scroll turns the list into a jittery mess and keeps the compositor busy.
-// Follow the most recent file at most a few times a second instead.
-const SCROLL_THROTTLE_MS = 400;
-let lastScrollAt = 0;
-let pendingScrollIndex = null;
-
-function scrollToFile(index) {
-    pendingScrollIndex = index;
-
-    const now = performance.now();
-    const wait = SCROLL_THROTTLE_MS - (now - lastScrollAt);
-    if (wait > 0) {
         return;
     }
 
-    lastScrollAt = now;
-    const target = pendingScrollIndex;
-    pendingScrollIndex = null;
+    row.classList.remove('processing-active');
+    cached.progressBar = null;
+    cached.pctLabel = null;
 
-    const fileItem = document.getElementById(`file-${target}`);
-    if (fileItem) {
-        fileItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (status === 'completed') {
+        const label = escapeHtml(extras.savings || 'Done');
+        colProgress.innerHTML = `<span class="row-status-pill success" title="${label}">✓ ${label}</span>`;
+    } else if (status === 'skipped') {
+        const savedText = typeof extras.savings === 'number'
+            ? `${formatBytes(extras.savings)} saved`
+            : escapeHtml(extras.savings || '');
+        colProgress.innerHTML = `<span class="row-status-pill skipped">Skipped${savedText ? ` (${savedText})` : ''}</span>`;
+    } else if (status === 'failed') {
+        row.classList.add('failed-active');
+        const errText = escapeHtml(extras.error || 'Unknown error');
+        colProgress.innerHTML = `<span class="row-status-pill failed" title="${errText}">✗ Failed</span>`;
+    }
+}
+
+function scrollToFile(index) {
+    const now = performance.now();
+    if (now - lastScrollAt < SCROLL_THROTTLE_MS) return;
+    lastScrollAt = now;
+
+    const cached = rowElements.get(index);
+    if (cached?.row) {
+        cached.row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
     }
 }
 
 // ============ Compression ============
 function updateStartButton() {
-    $('btn-start').disabled = !$('input-folder').value || !$('output-folder').value || files.length === 0;
+    const hasPaths = Boolean($('input-folder').value.trim() && $('output-folder').value.trim());
+    const canStart = hasPaths && files.length > 0 && !isCompressing;
+    $('btn-start').disabled = !canStart;
+
+    const dot = $('status-dot');
+    if (isCompressing) {
+        dot.className = 'status-dot running';
+    } else if (canStart) {
+        dot.className = 'status-dot ready';
+        $('action-status-text').textContent = `Ready · ${files.length} file(s) queued`;
+    } else {
+        dot.className = 'status-dot';
+        if (!hasPaths) {
+            $('action-status-text').textContent = 'Select a source folder to queue files';
+        } else if (files.length === 0) {
+            $('action-status-text').textContent = 'Scan folder or drop files to begin';
+        }
+    }
 }
 
 async function cancelCompression() {
     try {
+        $('action-status-text').textContent = 'Stopping active encoders...';
         await fetch('/api/cancel', { method: 'POST' });
     } catch (error) {
         console.error('Failed to cancel:', error);
     }
 }
 
-async function startCompression() {
-    if (files.length === 0 || isCompressing) return;
+function getCompressionPayload() {
+    return {
+        outputFolder: $('output-folder').value.trim(),
+        inputFolder: $('input-folder').value.trim(),
+        encoder: document.querySelector('input[name="encoder"]:checked').value,
+        imageFormat: document.querySelector('input[name="image-format"]:checked').value,
+        quality: $('quality-slider').value,
+        crf: $('crf-slider').value,
+        flatten: $('flatten-output').checked,
+        renameOnly: $('rename-only').checked,
+        categoryByYear: $('category-by-year').checked,
+        categoryByMonth: $('category-by-month').checked
+    };
+}
 
+function setRunningUI(totalCount) {
     isCompressing = true;
+    jobStartedAt = Date.now();
     $('btn-start').style.display = 'none';
     $('btn-cancel').style.display = 'inline-flex';
-    $('progress-section').style.display = 'block';
+    $('progress-section').style.display = 'flex';
     $('failed-files-section').style.display = 'none';
+    $('resume-banner').style.display = 'none';
 
     $('progress-bar').style.width = '0%';
     $('progress-text').textContent = '0%';
-    $('progress-count').textContent = `0/${files.length}`;
+    $('progress-count').textContent = `0/${totalCount}`;
+    $('status-dot').className = 'status-dot running';
+    $('action-status-text').textContent = `Starting 0 of ${totalCount}...`;
+}
 
-    files.forEach((f, i) => {
-        f.status = 'pending';
-        f.error = null;
-        f.savings = null;
-        updateFileStatus(i, 'pending');
-    });
+async function startCompression() {
+    if (files.length === 0 || isCompressing) return;
 
-    const encoder = document.querySelector('input[name="encoder"]:checked').value;
+    setRunningUI(files.length);
+
+    // Reset all rows cleanly in one pass without forcing layout per row
+    for (let i = 0; i < files.length; i++) {
+        files[i].status = 'pending';
+        files[i].error = null;
+        files[i].savings = null;
+        if (i < MAX_RENDERED_ROWS) {
+            updateFileStatus(i, 'pending');
+        }
+    }
 
     try {
         const response = await fetch('/api/compress', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                files: files,
-                outputFolder: $('output-folder').value,
-                inputFolder: $('input-folder').value,
-                encoder: encoder,
-                imageFormat: document.querySelector('input[name="image-format"]:checked').value,
-                quality: $('quality-slider').value,
-                crf: $('crf-slider').value,
-                flatten: $('flatten-output').checked,
-                renameOnly: $('rename-only').checked,
-                categoryByYear: $('category-by-year').checked,
-                categoryByMonth: $('category-by-month').checked
+                files,
+                ...getCompressionPayload()
             })
         });
 
@@ -644,7 +987,7 @@ async function startCompression() {
             throw new Error(error.error || 'Compression failed');
         }
     } catch (error) {
-        alert('Error starting compression: ' + error.message);
+        showToast('Error starting compression: ' + error.message, 'error');
         finishCompression();
     }
 }
@@ -654,61 +997,59 @@ function finishCompression() {
     $('btn-start').style.display = 'inline-flex';
     $('btn-cancel').style.display = 'none';
     $('progress-section').style.display = 'none';
+    updateStartButton();
 }
 
-// ============ Failed Files ============
+// ============ Failed Files & Retry ============
+function updateRetryButtonState() {
+    const failed = files.filter(f => f.status === 'failed');
+    const retryBtn = $('btn-retry-failed');
+    if (failed.length > 0) {
+        retryBtn.style.display = 'inline-flex';
+        $('failed-count-badge').textContent = failed.length;
+    } else {
+        retryBtn.style.display = 'none';
+    }
+}
+
 function showFailedFiles() {
     const section = $('failed-files-section');
     const list = $('failed-files-list');
-
     const failedFiles = files.filter(f => f.status === 'failed');
+
     if (failedFiles.length === 0) {
         section.style.display = 'none';
         return;
     }
 
-    section.style.display = 'block';
-    list.innerHTML = failedFiles.map((file, idx) => `
+    section.style.display = 'flex';
+    list.innerHTML = failedFiles.map(file => `
         <div class="failed-file-row">
-            <span class="failed-file-icon">${file.type === 'image' ? '🖼️' : '🎬'}</span>
-            <span class="failed-file-name" title="${file.path}">${file.name}</span>
-            <span class="failed-file-error" title="${file.error || 'Unknown error'}">${(file.error || 'Unknown error').substring(0, 50)}${(file.error || '').length > 50 ? '...' : ''}</span>
+            <span class="failed-file-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</span>
+            <span class="failed-file-error" title="${escapeHtml(file.error || 'Unknown error')}">${escapeHtml(file.error || 'Unknown error')}</span>
         </div>
     `).join('');
 }
 
 async function retryFailedFiles() {
-    const failedFiles = files.filter(f => f.status === 'failed');
-    if (failedFiles.length === 0) return;
+    const failedWithIndices = [];
+    files.forEach((f, idx) => {
+        if (f.status === 'failed') {
+            failedWithIndices.push({ ...f, index: idx });
+            updateFileStatus(idx, 'pending');
+        }
+    });
+    if (failedWithIndices.length === 0 || isCompressing) return;
 
-    isCompressing = true;
-    $('btn-start').style.display = 'none';
-    $('btn-cancel').style.display = 'inline-flex';
-    $('progress-section').style.display = 'block';
-    $('failed-files-section').style.display = 'none';
-
-    $('progress-bar').style.width = '0%';
-    $('progress-text').textContent = '0%';
-    $('progress-count').textContent = `0/${failedFiles.length}`;
-
-    const encoder = document.querySelector('input[name="encoder"]:checked').value;
+    setRunningUI(failedWithIndices.length);
 
     try {
         const response = await fetch('/api/retry-failed', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                failedFiles: failedFiles,
-                outputFolder: $('output-folder').value,
-                inputFolder: $('input-folder').value,
-                encoder: encoder,
-                imageFormat: document.querySelector('input[name="image-format"]:checked').value,
-                quality: $('quality-slider').value,
-                crf: $('crf-slider').value,
-                flatten: $('flatten-output').checked,
-                renameOnly: $('rename-only').checked,
-                categoryByYear: $('category-by-year').checked,
-                categoryByMonth: $('category-by-month').checked
+                failedFiles: failedWithIndices,
+                ...getCompressionPayload()
             })
         });
 
@@ -717,19 +1058,17 @@ async function retryFailedFiles() {
             throw new Error(error.error || 'Retry failed');
         }
     } catch (error) {
-        alert('Error retrying files: ' + error.message);
+        showToast('Error retrying files: ' + error.message, 'error');
         finishCompression();
     }
 }
 
-// ============ Summary ============
+// ============ Summary Modal ============
 function showSummary(results) {
     const modal = $('summary-modal');
     modal.style.display = 'flex';
     modal.offsetHeight;
     modal.classList.add('show');
-
-    $('progress-section').style.display = 'none';
 
     const savedBytes = results.totalSaved || 0;
     const originalBytes = results.totalOriginal || 1;
@@ -743,23 +1082,15 @@ function showSummary(results) {
     $('stat-saved').textContent = savedText;
     $('stat-time').textContent = formatDuration(results.duration || 0);
 
-    // Determine what to show in "Encoder" field
     const fileType = document.querySelector('input[name="file-type"]:checked').value;
-    let encoderText = '-';
-
+    let encoderText = 'MIXED';
     if (fileType === 'image') {
         encoderText = document.querySelector('input[name="image-format"]:checked').value.toUpperCase();
     } else if (fileType === 'video') {
         encoderText = document.querySelector('input[name="encoder"]:checked').value.toUpperCase();
-    } else {
-        encoderText = 'MIXED';
     }
 
-    const encoderLabel = document.querySelector('.summary-item:last-child .summary-label');
-    if (encoderLabel) {
-        encoderLabel.textContent = fileType === 'image' ? 'Format' : 'Encoder';
-    }
-
+    $('stat-encoder-label').textContent = fileType === 'image' ? 'Format' : 'Encoder';
     $('stat-encoder').textContent = encoderText;
     $('stat-failed').textContent = results.failedCount || 0;
 
@@ -777,12 +1108,17 @@ function closeModal() {
     modal.classList.remove('show');
     setTimeout(() => {
         modal.style.display = 'none';
-        $('btn-start').style.display = 'inline-flex';
-    }, 300);
+    }, 200);
 }
 
-// ============ Before/After Preview ============
 // ============ Presets ============
+function updatePresetActionState() {
+    const hasSelection = Boolean($('preset-select').value);
+    $('btn-update-preset').disabled = !hasSelection;
+    $('btn-copy-preset').disabled = !hasSelection;
+    $('btn-delete-preset').disabled = !hasSelection;
+}
+
 async function loadPresetsFromServer() {
     try {
         const response = await fetch('/api/presets');
@@ -802,13 +1138,7 @@ function renderPresetSelector() {
         option.textContent = preset.name;
         select.appendChild(option);
     });
-}
-
-async function savePreset() {
-    const name = prompt('Enter preset name:');
-    if (!name) return;
-
-    await upsertPreset(name, getCurrentSettings(), 'Preset saved!');
+    updatePresetActionState();
 }
 
 function getCurrentSettings() {
@@ -825,6 +1155,17 @@ function getCurrentSettings() {
     };
 }
 
+async function savePreset() {
+    const name = await openDialog({
+        title: 'Save Preset',
+        message: 'Name this compression preset:',
+        inputDefault: 'My Preset',
+        confirmText: 'Save'
+    });
+    if (!name || !name.trim()) return;
+    await upsertPreset(name, getCurrentSettings(), `Saved preset "${name.trim()}"`);
+}
+
 async function upsertPreset(name, settings, successMessage) {
     const trimmed = name.trim();
     if (!trimmed) return;
@@ -839,54 +1180,59 @@ async function upsertPreset(name, settings, successMessage) {
         if (response.ok) {
             await loadPresetsFromServer();
             $('preset-select').value = trimmed;
-            alert(successMessage);
+            updatePresetActionState();
+            showToast(successMessage, 'success');
         } else {
             const error = await response.json();
-            alert('Failed to save preset: ' + error.error);
+            showToast('Failed to save preset: ' + error.error, 'error');
         }
     } catch (error) {
-        alert('Error saving preset: ' + error.message);
+        showToast('Error saving preset: ' + error.message, 'error');
     }
 }
 
 async function updatePreset() {
     const name = $('preset-select').value;
-    if (!name) {
-        alert('Select a preset first to update.');
-        return;
-    }
+    if (!name) return;
 
-    if (!confirm(`Overwrite preset "${name}" with current settings?`)) return;
-    await upsertPreset(name, getCurrentSettings(), `Preset "${name}" updated.`);
+    const ok = await openDialog({
+        title: 'Update Preset',
+        message: `Overwrite "${name}" with your current settings?`,
+        confirmText: 'Overwrite'
+    });
+    if (!ok) return;
+    await upsertPreset(name, getCurrentSettings(), `Updated "${name}"`);
 }
 
 async function copyPreset() {
     const selected = $('preset-select').value;
-    if (!selected) {
-        alert('Select a preset first to copy.');
-        return;
-    }
+    if (!selected) return;
 
-    const newName = prompt('Enter new name for copied preset:', `${selected} Copy`);
-    if (!newName) return;
+    const newName = await openDialog({
+        title: 'Duplicate Preset',
+        message: `Enter a name for the copy of "${selected}":`,
+        inputDefault: `${selected} Copy`,
+        confirmText: 'Duplicate'
+    });
+    if (!newName || !newName.trim()) return;
 
     const source = presets.find(p => p.name === selected);
-    if (!source) {
-        alert('Selected preset not found.');
-        return;
-    }
+    if (!source) return;
 
-    await upsertPreset(newName, source.settings, `Preset copied to "${newName.trim()}".`);
+    await upsertPreset(newName, source.settings, `Copied preset to "${newName.trim()}"`);
 }
 
 async function deletePreset() {
     const name = $('preset-select').value;
-    if (!name) {
-        alert('Select a preset first to delete.');
-        return;
-    }
+    if (!name) return;
 
-    if (!confirm(`Delete preset "${name}"? This cannot be undone.`)) return;
+    const ok = await openDialog({
+        title: 'Delete Preset',
+        message: `Delete preset "${name}"? This cannot be undone.`,
+        confirmText: 'Delete',
+        danger: true
+    });
+    if (!ok) return;
 
     try {
         const response = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
@@ -898,14 +1244,16 @@ async function deletePreset() {
         await loadPresetsFromServer();
         $('preset-select').value = '';
         resetToCustomDefaults();
-        alert(`Preset "${name}" deleted.`);
+        updatePresetActionState();
+        showToast(`Deleted preset "${name}"`, 'info');
     } catch (error) {
-        alert('Error deleting preset: ' + error.message);
+        showToast('Error deleting preset: ' + error.message, 'error');
     }
 }
 
 async function loadPreset() {
     const name = $('preset-select').value;
+    updatePresetActionState();
     if (!name) {
         resetToCustomDefaults();
         return;
@@ -914,33 +1262,33 @@ async function loadPreset() {
     const preset = presets.find(p => p.name === name);
     if (!preset) return;
 
-    const settings = preset.settings;
-
-    const formatRadio = document.querySelector(`input[name="image-format"][value="${settings.imageFormat}"]`);
+    const s = preset.settings;
+    const formatRadio = document.querySelector(`input[name="image-format"][value="${s.imageFormat}"]`);
     if (formatRadio) formatRadio.checked = true;
+    syncSegmentedActive('image-format');
 
-    $('quality-slider').value = settings.quality;
-    $('quality-value').textContent = settings.quality;
+    $('quality-slider').value = s.quality;
+    updateQualityLabel();
 
-    const encoderRadio = document.querySelector(`input[name="encoder"][value="${settings.encoder}"]`);
-    if (encoderRadio) encoderRadio.checked = true;
+    const encoderRadio = document.querySelector(`input[name="encoder"][value="${s.encoder}"]`);
+    if (encoderRadio && !encoderRadio.disabled) encoderRadio.checked = true;
+    syncEncoderActive();
 
-    $('crf-slider').value = settings.crf;
-    $('crf-value').textContent = settings.crf;
+    $('crf-slider').value = s.crf;
+    updateCrfLabel();
 
-    $('recursive-scan').checked = settings.recursive;
-    $('flatten-output').checked = settings.flatten;
-    $('rename-only').checked = settings.renameOnly;
-    $('category-by-year').checked = settings.categoryByYear;
-    $('category-by-month').checked = settings.categoryByMonth;
+    $('recursive-scan').checked = Boolean(s.recursive);
+    $('rename-only').checked = Boolean(s.renameOnly);
+    applyStructureFromCheckboxes(s.flatten, s.categoryByYear, s.categoryByMonth);
 }
 
 function resetToCustomDefaults() {
     const defaultFormat = document.querySelector('input[name="image-format"][value="webp"]');
     if (defaultFormat) defaultFormat.checked = true;
+    syncSegmentedActive('image-format');
 
     $('quality-slider').value = '88';
-    $('quality-value').textContent = '88';
+    updateQualityLabel();
 
     let defaultEncoder = 'x264';
     if (availableEncoders.nvenc) defaultEncoder = 'nvenc';
@@ -949,18 +1297,17 @@ function resetToCustomDefaults() {
 
     const defaultEncoderRadio = document.querySelector(`input[name="encoder"][value="${defaultEncoder}"]`);
     if (defaultEncoderRadio) defaultEncoderRadio.checked = true;
+    syncEncoderActive();
 
     $('crf-slider').value = '22';
-    $('crf-value').textContent = '22';
+    updateCrfLabel();
 
     $('recursive-scan').checked = false;
-    $('flatten-output').checked = false;
     $('rename-only').checked = false;
-    $('category-by-year').checked = false;
-    $('category-by-month').checked = false;
+    applyStructureFromCheckboxes(false, false, false);
 }
 
-// ============ Job Resume ============
+// ============ Job Resume (Non-blocking Banner) ============
 async function checkResumableJob() {
     try {
         const response = await fetch('/api/job-state');
@@ -969,21 +1316,25 @@ async function checkResumableJob() {
         if (state.hasJob && state.pendingFiles?.length > 0) {
             const pending = state.pendingFiles.length;
             const total = state.files?.length || pending;
-            const completed = total - pending;
+            const completed = Math.max(0, total - pending);
 
-            const resume = confirm(`Found interrupted job: ${completed}/${total} files processed.\n\nWould you like to resume processing the remaining ${pending} files?`);
-            if (resume) {
-                await resumeJob();
-            } else {
+            $('resume-banner-text').textContent = `Interrupted job found: ${completed}/${total} processed (${pending} remaining)`;
+            $('resume-banner').style.display = 'flex';
+
+            $('btn-resume-job').onclick = () => resumeJob(state);
+            $('btn-dismiss-resume').onclick = async () => {
                 await fetch('/api/job-state/clear', { method: 'POST' });
-            }
+                $('resume-banner').style.display = 'none';
+            };
+        } else {
+            $('resume-banner').style.display = 'none';
         }
     } catch (error) {
         console.error('Failed to check job state:', error);
     }
 }
 
-async function resumeJob() {
+async function resumeJob(state) {
     try {
         const response = await fetch('/api/job-state/resume', { method: 'POST' });
         if (!response.ok) {
@@ -991,27 +1342,47 @@ async function resumeJob() {
             throw new Error(error.error || 'Resume failed');
         }
 
-        isCompressing = true;
-        $('btn-start').style.display = 'none';
-        $('btn-cancel').style.display = 'inline-flex';
-        $('progress-section').style.display = 'block';
+        const data = await response.json();
+        if (state?.inputFolder) $('input-folder').value = state.inputFolder;
+        if (state?.outputFolder) $('output-folder').value = state.outputFolder;
+
+        if (Array.isArray(data.files) && data.files.length > 0) {
+            files = data.files.map(f => ({ ...f, status: 'pending' }));
+            renderFileList();
+        }
+
+        setRunningUI(data.total || files.length);
+        showToast(`Resumed ${data.total} remaining file(s)`, 'info');
     } catch (error) {
-        alert('Error resuming job: ' + error.message);
+        showToast('Error resuming job: ' + error.message, 'error');
     }
 }
 
-// ============ Performance Metrics ============
-function startPerformanceMetrics() {
-    updateMetrics();
-    performanceInterval = setInterval(updateMetrics, 5000);
+// ============ Performance Metrics (Polls Only While Visible) ============
+function isMetricsOpen() {
+    const el = $('metrics-section');
+    return Boolean(el && el.style.display !== 'none');
 }
 
 function toggleMetricsPanel() {
     const metrics = $('metrics-section');
+    const btn = $('btn-toggle-metrics');
     if (!metrics) return;
 
-    const isHidden = metrics.style.display === 'none' || metrics.style.display === '';
-    metrics.style.display = isHidden ? 'block' : 'none';
+    const show = !isMetricsOpen();
+    metrics.style.display = show ? 'grid' : 'none';
+    btn.classList.toggle('active', show);
+    btn.setAttribute('aria-expanded', String(show));
+
+    if (show) {
+        updateMetrics();
+        if (!performanceInterval) {
+            performanceInterval = setInterval(updateMetrics, 4000);
+        }
+    } else if (performanceInterval) {
+        clearInterval(performanceInterval);
+        performanceInterval = null;
+    }
 }
 
 async function updateMetrics() {
@@ -1022,9 +1393,8 @@ async function updateMetrics() {
         $('metric-memory').textContent = metrics.memory.heapUsed;
         $('metric-processed').textContent = metrics.compressionState.processed;
         $('metric-failed').textContent = metrics.compressionState.failed;
-        $('metrics-uptime').textContent = `Uptime: ${formatDuration(metrics.uptime)}`;
-    } catch {
-    }
+        $('metrics-uptime').textContent = formatDuration(metrics.uptime);
+    } catch {}
 }
 
 // ============ Utilities ============
@@ -1044,31 +1414,15 @@ function formatDuration(seconds) {
     return `${mins}m ${secs}s`;
 }
 
-// ============ Start ============
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-} else {
-    init();
-}
-
 // ============ Theme Management ============
 let currentTheme = 'system';
 const THEME_ORDER = ['system', 'dark', 'light'];
-const THEME_ICONS = {
-    system: '💻',
-    dark: '🌙',
-    light: '☀️'
-};
 
 function initTheme() {
     const stored = localStorage.getItem('mediaSquashTheme');
     if (stored && THEME_ORDER.includes(stored)) currentTheme = stored;
 
-    const btn = $('theme-toggle-btn');
-    if (btn) {
-        btn.onclick = cycleTheme;
-    }
-
+    $('theme-toggle-btn').onclick = cycleTheme;
     setTheme(currentTheme);
 
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -1079,8 +1433,7 @@ function initTheme() {
 }
 
 function cycleTheme() {
-    const currentIndex = THEME_ORDER.indexOf(currentTheme);
-    const nextIndex = (currentIndex + 1) % THEME_ORDER.length;
+    const nextIndex = (THEME_ORDER.indexOf(currentTheme) + 1) % THEME_ORDER.length;
     setTheme(THEME_ORDER[nextIndex]);
 }
 
@@ -1088,11 +1441,9 @@ function setTheme(mode) {
     currentTheme = mode;
     localStorage.setItem('mediaSquashTheme', mode);
 
-    const btn = $('theme-toggle-btn');
-    if (btn) {
-        btn.textContent = THEME_ICONS[mode];
-        btn.title = `Current: ${mode.charAt(0).toUpperCase() + mode.slice(1)} (Click to switch)`;
-    }
+    $('theme-icon').innerHTML = ICONS[mode] || ICONS.system;
+    $('theme-label').textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+    $('theme-toggle-btn').title = `Theme: ${mode} (click to switch)`;
 
     if (mode === 'system') {
         const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -1108,4 +1459,11 @@ function applyTheme(resolvedMode) {
     } else {
         document.documentElement.removeAttribute('data-theme');
     }
+}
+
+// ============ Start ============
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
 }

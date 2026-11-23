@@ -1,25 +1,191 @@
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
 const fs = require('fs');
-const { ensureDirectoryExists, getFileSize, formatFileSize, getCompressionRatio, getOptimalThreads, setFileMetadata, getFFmpegPath } = require('./utils');
+const {
+    ensureDirCached,
+    formatFileSize,
+    getCompressionRatio,
+    getOptimalThreads,
+    setFileMetadataAsync,
+    getFFmpegPath,
+    getFFprobePath,
+    inspectMediaFile,
+    probeVideo
+} = require('./utils');
 const { getEncoderConfig, detectAvailableEncoders } = require('./hwEncoder');
 
-// Set ffmpeg path
 ffmpeg.setFfmpegPath(getFFmpegPath());
+ffmpeg.setFfprobePath(getFFprobePath());
 
-// Default compression settings
 const DEFAULT_SETTINGS = {
     encoder: 'auto', // 'auto', 'nvenc', 'amf', 'qsv', 'x264', or 'x265'
     crf: 22,
     preset: 'medium', // For x264/x265 software encoders
     audioCodec: 'aac',
     audioBitrate: '256k',
-    threads: 0, // 0 = auto (for x264/x265 software encoders)
-    videoJobs: 2 // Number of videos to process in parallel
+    threads: 0, // 0 = auto
+    videoJobs: 2
 };
 
-// Supported video extensions
 const SUPPORTED_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.3gp', '.m4v', '.mpeg', '.mpg'];
+const HARDWARE_ENCODERS = new Set(['nvenc', 'amf', 'qsv']);
+
+/**
+ * Determine whether the source audio stream can be copied losslessly without re-encoding.
+ * Copies AAC streams <= 256kbps (or unspecified mobile AAC bitrate) when targeting MP4/M4V/MKV/MOV.
+ * @param {Object|null} videoInfo
+ * @param {string} outputExt
+ * @returns {boolean}
+ */
+function shouldCopyAudio(videoInfo, outputExt) {
+    if (!videoInfo || !['.mp4', '.m4v', '.mov', '.mkv'].includes(outputExt)) {
+        return false;
+    }
+    const audioStream = videoInfo.streams?.find(s => s.codec_type === 'audio');
+    if (!audioStream) return false;
+    if ((audioStream.codec_name || '').toLowerCase() !== 'aac') return false;
+
+    const bitRate = parseInt(audioStream.bit_rate, 10);
+    return isNaN(bitRate) || bitRate <= 256000;
+}
+
+/**
+ * Run a single FFmpeg encode attempt with cancellation, process tracking, and optional hwaccel.
+ */
+function runSingleEncode({
+    inputPath,
+    targetPath,
+    outputExt,
+    encoderConfig,
+    settings,
+    threads,
+    useHwAccel,
+    copyAudio,
+    options
+}) {
+    return new Promise((resolve, reject) => {
+        if (options.signal?.aborted || (options.shouldCancel && options.shouldCancel())) {
+            reject({ input: inputPath, output: targetPath, error: 'Compression cancelled', cancelled: true, success: false });
+            return;
+        }
+
+        const isSoftware = encoderConfig.type === 'x264' || encoderConfig.type === 'x265';
+        const outputOptions = isSoftware
+            ? encoderConfig.getOutputOptions(settings.crf, settings.preset, threads)
+            : encoderConfig.getOutputOptions(settings.crf);
+
+        let command = ffmpeg(inputPath);
+
+        if (useHwAccel) {
+            command = command.inputOptions(['-hwaccel', 'auto']);
+        }
+        if (!isSoftware && threads > 0) {
+            command = command.inputOptions(['-threads', String(threads)]);
+        }
+
+        command = command
+            .addOutputOptions(['-map', '0:v:0', '-map', '0:a:0?'])
+            .videoCodec(encoderConfig.codec)
+            .addOutputOptions(outputOptions);
+
+        if (copyAudio) {
+            command = command.addOutputOptions(['-c:a', 'copy']);
+        } else {
+            command = command
+                .audioCodec(settings.audioCodec)
+                .audioBitrate(settings.audioBitrate);
+        }
+
+        command = command.addOutputOptions(['-map_metadata', '0']);
+
+        if (outputExt === '.mp4' || outputExt === '.m4v') {
+            command = command.addOutputOptions(['-movflags', '+faststart']);
+        }
+
+        let settled = false;
+        let ffmpegCommand = null;
+
+        const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            try { ffmpegCommand?.kill('SIGKILL'); } catch {}
+            fs.promises.unlink(targetPath).catch(() => {});
+            reject({ input: inputPath, output: targetPath, error: 'Compression cancelled', cancelled: true, success: false });
+        };
+
+        if (options.signal) {
+            options.signal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        const cleanupListeners = () => {
+            if (options.signal) {
+                options.signal.removeEventListener('abort', onAbort);
+            }
+        };
+
+        ffmpegCommand = command
+            .on('start', (cmdLine) => {
+                if (options.verbose) {
+                    console.log('FFmpeg command:', cmdLine);
+                }
+                if (options.onStart) {
+                    options.onStart(ffmpegCommand);
+                }
+            })
+            .on('progress', (progress) => {
+                if (settled) return;
+                if (options.signal?.aborted || (options.shouldCancel && options.shouldCancel())) {
+                    onAbort();
+                    return;
+                }
+                if (options.onProgress) {
+                    options.onProgress(progress);
+                }
+            })
+            .on('end', () => {
+                cleanupListeners();
+                if (settled) return;
+                settled = true;
+                resolve();
+            })
+            .on('error', (err) => {
+                cleanupListeners();
+                if (settled) return;
+                settled = true;
+                try { ffmpegCommand?.kill('SIGKILL'); } catch {}
+
+                const cancelled = Boolean(options.signal?.aborted || (options.shouldCancel && options.shouldCancel()));
+                if (cancelled) {
+                    fs.promises.unlink(targetPath).catch(() => {});
+                }
+                reject({
+                    input: inputPath,
+                    output: targetPath,
+                    error: cancelled ? 'Compression cancelled' : err.message,
+                    cancelled,
+                    success: false
+                });
+            })
+            .save(targetPath);
+    });
+}
+
+/**
+ * Losslessly remux an already MP4-compatible stream (h264/hevc + optional aac) into MP4.
+ */
+function remuxToMp4(inputPath, tempOutPath, videoCodecName) {
+    return new Promise((resolve, reject) => {
+        const outOpts = ['-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'copy', '-c:a', 'copy', '-map_metadata', '0', '-movflags', '+faststart'];
+        if (videoCodecName === 'hevc') {
+            outOpts.push('-tag:v', 'hvc1');
+        }
+        ffmpeg(inputPath)
+            .addOutputOptions(outOpts)
+            .on('end', resolve)
+            .on('error', reject)
+            .save(tempOutPath);
+    });
+}
 
 /**
  * Compress a video file using FFmpeg with hardware acceleration support
@@ -30,122 +196,152 @@ const SUPPORTED_EXTENSIONS = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.
  */
 async function compressVideo(inputPath, outputPath, options = {}) {
     const settings = { ...DEFAULT_SETTINGS, ...options };
-    const originalSize = getFileSize(inputPath);
+    const originalSize = typeof options.originalSize === 'number'
+        ? options.originalSize
+        : await fs.promises.stat(inputPath).then(s => s.size).catch(() => 0);
 
-    // Ensure output directory exists
-    ensureDirectoryExists(outputPath);
+    const inspected = await inspectMediaFile(inputPath, originalSize);
+    if (inspected.kind === 'invalid') {
+        throw {
+            input: inputPath,
+            output: outputPath,
+            error: `Skipped invalid video (${inspected.reason})`,
+            success: false
+        };
+    }
+    if (inspected.kind === 'image') {
+        throw {
+            input: inputPath,
+            output: outputPath,
+            error: `Input is a ${inspected.format || 'still'} image mislabeled with a video extension`,
+            success: false
+        };
+    }
 
-    // Get output extension to determine container format
+    if (!options.skipDirCheck) {
+        ensureDirCached(path.dirname(outputPath));
+    }
+
+    const inputExt = path.extname(inputPath).toLowerCase();
     const outputExt = path.extname(outputPath).toLowerCase();
-
-    // Get encoder configuration (handles auto-detection and fallback)
     const encoderConfig = await getEncoderConfig(settings.encoder);
+    const threads = settings.threads > 0 ? settings.threads : getOptimalThreads();
+    const videoInfo = options.videoInfo !== undefined
+        ? options.videoInfo
+        : await probeVideo(inputPath).catch(() => null);
+    const copyAudio = shouldCopyAudio(videoInfo, outputExt);
 
-    // Calculate optimal threads for software encoders (x264/x265)
-    const threads = settings.threads || getOptimalThreads();
+    const samePath = path.resolve(inputPath) === path.resolve(outputPath);
+    const targetPath = samePath
+        ? `${outputPath}.tmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}${outputExt}`
+        : outputPath;
 
-    let isCancelled = false;
+    const isHardware = HARDWARE_ENCODERS.has(encoderConfig.type);
+    const tryHwAccel = isHardware && !options.disableHwAccel;
 
-    return new Promise((resolve, reject) => {
-        // Get encoder-specific output options
-        let outputOptions;
-        if (encoderConfig.type === 'x264' || encoderConfig.type === 'x265') {
-            outputOptions = encoderConfig.getOutputOptions(settings.crf, settings.preset, threads);
-        } else {
-            outputOptions = encoderConfig.getOutputOptions(settings.crf);
+    try {
+        try {
+            await runSingleEncode({
+                inputPath,
+                targetPath,
+                outputExt,
+                encoderConfig,
+                settings,
+                threads,
+                useHwAccel: tryHwAccel,
+                copyAudio,
+                options
+            });
+        } catch (err) {
+            if (err?.cancelled || !tryHwAccel) {
+                throw err;
+            }
+            // Retry once with software decode if GPU hardware decode failed on an exotic input format
+            await fs.promises.unlink(targetPath).catch(() => {});
+            await runSingleEncode({
+                inputPath,
+                targetPath,
+                outputExt,
+                encoderConfig,
+                settings,
+                threads,
+                useHwAccel: false,
+                copyAudio,
+                options
+            });
         }
 
-        // Create ffmpeg command
-        let command = ffmpeg(inputPath)
-            // Explicitly map only first video and first audio stream
-            // Some iPhone MOV files have multiple streams including invalid ones (codec 'none')
-            .addOutputOptions(['-map', '0:v:0', '-map', '0:a:0?'])
-            .videoCodec(encoderConfig.codec)
-            .addOutputOptions(outputOptions)
-            .audioCodec(settings.audioCodec)
-            .audioBitrate(settings.audioBitrate)
-            // Preserve metadata (GPS location, date, etc) and auto-rotate
-            .addOutputOptions(['-map_metadata', '0']);
-
-        // Add format-specific options
-        if (outputExt === '.mp4' || outputExt === '.m4v') {
-            // Enable faststart for web streaming
-            command = command.addOutputOptions(['-movflags', '+faststart']);
+        if (samePath) {
+            await fs.promises.rename(targetPath, outputPath);
         }
 
-        const ffmpegCommand = command
-            .on('start', (cmdLine) => {
-                if (options.verbose) {
-                    console.log('FFmpeg command:', cmdLine);
-                }
-                if (options.onStart) {
-                    options.onStart(ffmpegCommand);
-                }
-            })
-            .on('progress', (progress) => {
-                // Check for cancellation
-                if (options.shouldCancel && options.shouldCancel()) {
-                    isCancelled = true;
-                    ffmpegCommand.kill('SIGKILL');
-                    reject(new Error('Compression cancelled'));
-                    return;
-                }
-                if (options.onProgress) {
-                    options.onProgress(progress);
-                }
-            })
-            .on('end', () => {
-                let compressedSize = getFileSize(outputPath);
-                let note = '';
+        let compressedSize = await fs.promises.stat(outputPath).then(s => s.size).catch(() => 0);
+        let note = '';
+        const isConvertingFormat = inputExt !== outputExt;
 
-                // Check if we're converting container formats (e.g., MOV to MP4)
-                const inputExt = path.extname(inputPath).toLowerCase();
-                const isConvertingFormat = inputExt !== outputExt;
+        if (compressedSize > originalSize && !isConvertingFormat) {
+            try {
+                if (!samePath) {
+                    await fs.promises.copyFile(inputPath, outputPath);
+                }
+                await setFileMetadataAsync(inputPath, outputPath);
+                compressedSize = originalSize;
+                note = ' (used original, compressed was larger)';
+            } catch (err) {
+                console.error('Error reverting to original file:', err.message);
+            }
+        } else if (compressedSize > originalSize && isConvertingFormat) {
+            const vCodec = (videoInfo?.streams?.find(s => s.codec_type === 'video')?.codec_name || '').toLowerCase();
+            const aStream = videoInfo?.streams?.find(s => s.codec_type === 'audio');
+            const aCodec = (aStream?.codec_name || '').toLowerCase();
+            const canRemux = (outputExt === '.mp4' || outputExt === '.m4v') &&
+                (vCodec === 'h264' || vCodec === 'hevc') &&
+                (!aStream || aCodec === 'aac');
 
-                // Use original file if compressed is larger, but ONLY if not converting formats
-                // When converting formats (e.g., MOV to MP4), we must keep the re-encoded version
-                // to ensure audio codec compatibility
-                if (compressedSize > originalSize && !isConvertingFormat) {
-                    try {
-                        fs.copyFileSync(inputPath, outputPath);
-                        setFileMetadata(inputPath, outputPath);
-                        compressedSize = originalSize;
-                        note = ' (used original, compressed was larger)';
-                    } catch (err) {
-                        console.error('Error reverting to original file:', err.message);
+            if (canRemux) {
+                const remuxTmp = `${outputPath}.remux_${Date.now()}${outputExt}`;
+                try {
+                    await remuxToMp4(inputPath, remuxTmp, vCodec);
+                    const remuxSize = await fs.promises.stat(remuxTmp).then(s => s.size).catch(() => 0);
+                    if (remuxSize > 0 && remuxSize < compressedSize) {
+                        await fs.promises.rename(remuxTmp, outputPath);
+                        compressedSize = remuxSize;
+                        note = ' (remuxed losslessly, re-encode was larger)';
+                    } else {
+                        await fs.promises.unlink(remuxTmp).catch(() => {});
+                        note = ' (kept converted file for compatibility)';
                     }
-                } else if (compressedSize > originalSize && isConvertingFormat) {
+                } catch {
+                    await fs.promises.unlink(remuxTmp).catch(() => {});
                     note = ' (kept converted file for compatibility)';
                 }
+            } else {
+                note = ' (kept converted file for compatibility)';
+            }
+        }
 
-                resolve({
-                    input: inputPath,
-                    output: outputPath,
-                    originalSize,
-                    compressedSize,
-                    originalSizeFormatted: formatFileSize(originalSize),
-                    compressedSizeFormatted: formatFileSize(compressedSize),
-                    savings: getCompressionRatio(originalSize, compressedSize) + note,
-                    encoder: encoderConfig.name,
-                    success: true
-                });
-            })
-            .on('error', (err) => {
-                // Clean up on error
-                try { ffmpegCommand.kill(); } catch {}
-                reject({
-                    input: inputPath,
-                    output: outputPath,
-                    error: err.message,
-                    success: false
-                });
-            })
-            .save(outputPath);
-    });
+        return {
+            input: inputPath,
+            output: outputPath,
+            originalSize,
+            compressedSize,
+            originalSizeFormatted: formatFileSize(originalSize),
+            compressedSizeFormatted: formatFileSize(compressedSize),
+            savings: getCompressionRatio(originalSize, compressedSize) + note,
+            encoder: encoderConfig.name,
+            audioCopied: copyAudio,
+            success: true
+        };
+    } catch (err) {
+        if (samePath) {
+            await fs.promises.unlink(targetPath).catch(() => {});
+        }
+        throw err;
+    }
 }
 
 /**
- * Get video metadata
+ * Get video metadata (cached via probeVideo)
  * @param {string} inputPath - Path to video file
  * @returns {Promise<Object>} - Video metadata
  */
@@ -172,7 +368,7 @@ function isSupportedFormat(filePath) {
 }
 
 /**
- * Calculate adaptive CRF based on video properties
+ * Calculate adaptive CRF based on video properties (portrait-aware via short edge).
  * Higher CRF = smaller file, lower quality
  * @param {number} baseCrf - Base CRF (default 22)
  * @param {Object} videoInfo - Video metadata from ffprobe
@@ -182,38 +378,30 @@ function getAdaptiveCrf(baseCrf, videoInfo) {
     let crf = baseCrf || 22;
 
     try {
-        const videoStream = videoInfo.streams?.find(s => s.codec_type === 'video');
+        const videoStream = videoInfo?.streams?.find(s => s.codec_type === 'video');
         if (!videoStream) return crf;
 
         const width = videoStream.width || 0;
         const height = videoStream.height || 0;
-        const duration = videoStream.duration || 0;
+        const shortEdge = (width > 0 && height > 0) ? Math.min(width, height) : Math.max(width, height);
+        const duration = parseFloat(videoStream.duration) || parseFloat(videoInfo.format?.duration) || 0;
 
-        // Resolution adjustment
-        if (height >= 2160) {
-            // 4K: more pixels = artifacts less visible
+        if (shortEdge >= 2160) {
             crf += 2;
-        } else if (height >= 1440) {
-            // 2K/QHD: slightly more pixels
+        } else if (shortEdge >= 1440) {
             crf += 1;
-        } else if (height <= 480) {
-            // 480p or less: fewer pixels = artifacts more visible
+        } else if (shortEdge > 0 && shortEdge <= 480) {
             crf -= 2;
-        } else if (height <= 720) {
-            // 720p: standard
+        } else if (shortEdge > 0 && shortEdge <= 720) {
             crf -= 1;
         }
 
-        // Duration adjustment
         if (duration > 600) {
-            // >10 min: more savings on longer videos
             crf += 1;
         }
 
-        // Clamp CRF to valid range
         crf = Math.max(0, Math.min(51, crf));
     } catch {
-        // On error, return base CRF
         return baseCrf || 22;
     }
 
@@ -221,20 +409,23 @@ function getAdaptiveCrf(baseCrf, videoInfo) {
 }
 
 /**
- * Get video info with adaptive CRF
+ * Get video info with adaptive CRF (uses cached probeVideo)
  * @param {string} inputPath - Path to video
  * @param {number} baseCrf - Base CRF
  * @returns {Promise<{crf: number, width: number, height: number, duration: number}>}
  */
 async function getVideoInfoWithCrf(inputPath, baseCrf) {
-    const info = await getVideoInfo(inputPath);
+    const info = await probeVideo(inputPath);
+    if (!info) {
+        throw new Error(`Failed to probe video: ${inputPath}`);
+    }
     const videoStream = info.streams?.find(s => s.codec_type === 'video');
 
     return {
         crf: getAdaptiveCrf(baseCrf, info),
         width: videoStream?.width || 0,
         height: videoStream?.height || 0,
-        duration: parseFloat(videoStream?.duration) || 0
+        duration: parseFloat(videoStream?.duration) || parseFloat(info.format?.duration) || 0
     };
 }
 
@@ -243,6 +434,7 @@ module.exports = {
     getVideoInfo,
     getVideoInfoWithCrf,
     getAdaptiveCrf,
+    shouldCopyAudio,
     isSupportedFormat,
     detectAvailableEncoders,
     SUPPORTED_EXTENSIONS,

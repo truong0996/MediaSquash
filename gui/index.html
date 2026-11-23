@@ -4,345 +4,459 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Media Compressor</title>
+    <title>MediaSquash</title>
     <link rel="icon" href="data:,">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
-    <!-- Main Content -->
-    <div class="container">
-        <!-- Theme Toggle (Floating) -->
-        <button class="theme-btn" id="theme-toggle-btn" title="Theme">💻</button>
-
-        <!-- Top Section: Folders -->
-        <div class="glass-panel io-section" id="drop-zone">
-            <div class="drop-overlay" id="drop-overlay">
-                <span class="drop-icon">📂</span>
-                <span class="drop-text">Drop folders or media files here</span>
-            </div>
-            <div class="input-group">
-                <label class="input-label">Source Folder</label>
-                <div class="input-wrapper">
-                    <input type="text" id="input-folder" class="path-input" placeholder="Select Source..." readonly>
-                    <button class="btn-icon-inside" id="btn-input-browse">
-                        <span class="icon">📂</span>
-                    </button>
+    <div class="app-shell">
+        <!-- Top App Bar -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="4" />
+                        <path d="M9 3v18M15 3v18M3 9h6M15 15h6" />
+                    </svg>
                 </div>
+                <span class="brand-name">MediaSquash</span>
+                <span class="brand-tag">Studio</span>
             </div>
 
-            <div class="input-group">
-                <label class="input-label">Destination Folder</label>
-                <div class="input-wrapper">
-                    <input type="text" id="output-folder" class="path-input" placeholder="Select Destination..."
-                        readonly>
-                    <button class="btn-icon-inside" id="btn-output-browse">
-                        <span class="icon">📂</span>
-                    </button>
-                    <!-- Scan button could potentially go here or be separate. Mockup shows it separate. -->
-                    <button id="btn-scan" class="btn-icon-inside"
-                        style="right: 48px; width: auto; padding: 0 12px; background: var(--accent-blue);">
-                        Scan
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Options Bar -->
-        <div class="options-bar">
-            <div class="options-top-row">
-                <div class="checkbox-group">
-                    <label class="checkbox-option">
-                        <input type="checkbox" id="recursive-scan">
-                        <div class="custom-check"></div>
-                        Include subfolders
-                    </label>
-                    <label class="checkbox-option">
-                        <input type="checkbox" id="flatten-output">
-                        <div class="custom-check"></div>
-                        Flatten output
-                    </label>
-                    <label class="checkbox-option">
-                        <input type="checkbox" id="rename-only">
-                        <div class="custom-check"></div>
-                        Rename only
-                    </label>
-                    <label class="checkbox-option">
-                        <input type="checkbox" id="category-by-year">
-                        <div class="custom-check"></div>
-                        Category by year
-                    </label>
-                    <label class="checkbox-option">
-                        <input type="checkbox" id="category-by-month">
-                        <div class="custom-check"></div>
-                        Category by month
-                    </label>
-                </div>
-
-                <div class="file-type-group">
-                    <label class="type-radio active">
-                        <input type="radio" name="file-type" value="all" checked>
-                        All
-                    </label>
-                    <label class="type-radio">
-                        <input type="radio" name="file-type" value="image">
-                        Images only
-                    </label>
-                    <label class="type-radio">
-                        <input type="radio" name="file-type" value="video">
-                        Videos only
-                    </label>
-                </div>
-            </div>
-
-            <div class="options-bottom-row">
-                <div class="preset-selector">
-                    <label class="input-label" style="margin: 0;">Presets:</label>
-                    <select id="preset-select" class="preset-select">
+            <div class="header-controls">
+                <div class="preset-bar" aria-label="Presets">
+                    <span class="preset-label">Preset</span>
+                    <select id="preset-select" class="preset-select" aria-label="Select preset">
                         <option value="">Custom</option>
                     </select>
-                    <button class="btn-icon-inside" id="btn-save-preset" title="Save current settings as preset">💾</button>
-                    <button class="preset-action-btn" id="btn-update-preset" title="Update selected preset">Update</button>
-                    <button class="preset-action-btn" id="btn-copy-preset" title="Copy selected preset">Copy</button>
-                    <button class="preset-action-btn danger" id="btn-delete-preset" title="Delete selected preset">Delete</button>
+                    <button class="icon-btn" id="btn-save-preset" title="Save current settings as new preset" aria-label="Save preset">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                            <polyline points="17 21 17 13 7 13 7 21" />
+                            <polyline points="7 3 7 8 15 8" />
+                        </svg>
+                    </button>
+                    <button class="text-btn" id="btn-update-preset" title="Overwrite selected preset" disabled>Update</button>
+                    <button class="text-btn" id="btn-copy-preset" title="Duplicate selected preset" disabled>Copy</button>
+                    <button class="text-btn danger" id="btn-delete-preset" title="Delete selected preset" disabled>Delete</button>
                 </div>
 
-                <button class="preset-action-btn" id="btn-toggle-metrics" title="Show/Hide performance panel">Performance</button>
+                <div class="header-divider"></div>
+
+                <button class="pill-btn" id="btn-toggle-metrics" title="Toggle performance monitor" aria-expanded="false">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                    </svg>
+                    <span>Metrics</span>
+                </button>
+
+                <button class="pill-btn" id="theme-toggle-btn" title="Switch theme">
+                    <span id="theme-icon" class="theme-icon" aria-hidden="true"></span>
+                    <span id="theme-label">System</span>
+                </button>
             </div>
-        </div>
+        </header>
 
-        <!-- Settings Grid -->
-        <div class="settings-container">
-            <!-- Image Settings -->
-            <div class="glass-panel settings-card">
-                <div class="card-header">
-                    <span class="card-icon">🖼️</span> Image Compression Settings
+        <!-- Main 2-Column Workbench -->
+        <main class="workbench" id="drop-zone">
+            <!-- Global Drag-and-Drop Overlay -->
+            <div class="drop-overlay" id="drop-overlay">
+                <div class="drop-overlay-card">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    <div class="drop-title">Drop folders or media files</div>
+                    <div class="drop-subtitle">Images and videos will be queued immediately</div>
                 </div>
+            </div>
 
-                <div class="setting-group">
-                    <label class="input-label">Format</label>
-                    <div class="preset-tabs">
-                        <label class="tab-option">
+            <!-- Left Configuration Sidebar -->
+            <aside class="sidebar">
+                <!-- Folders Panel -->
+                <section class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">Folders</span>
+                    </div>
+
+                    <div class="field-group">
+                        <label class="field-label" for="input-folder">Source Folder</label>
+                        <div class="input-row">
+                            <div class="input-with-btn">
+                                <input type="text" id="input-folder" class="text-input" placeholder="Paste path or browse, e.g. D:\Photos">
+                                <button class="inline-icon-btn" id="btn-input-browse" title="Browse source folder" aria-label="Browse source folder">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <button class="btn-secondary" id="btn-scan" title="Scan source folder for media">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="8" />
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                                </svg>
+                                <span>Scan</span>
+                            </button>
+                        </div>
+                        <label class="check-row" style="margin-top: 8px;">
+                            <input type="checkbox" id="recursive-scan">
+                            <span class="check-box" aria-hidden="true"></span>
+                            <span>Include subfolders</span>
+                        </label>
+                    </div>
+
+                    <div class="field-group">
+                        <label class="field-label" for="output-folder">Destination Folder</label>
+                        <div class="input-with-btn">
+                            <input type="text" id="output-folder" class="text-input" placeholder="e.g. D:\Photos\compressed">
+                            <button class="inline-icon-btn" id="btn-output-browse" title="Browse destination folder" aria-label="Browse destination folder">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Output Organization Panel -->
+                <section class="panel">
+                    <div class="panel-header">
+                        <span class="panel-title">Output Structure</span>
+                        <label class="switch-row" title="Copy & rename by capture date without re-encoding (HEIC still converts)">
+                            <input type="checkbox" id="rename-only">
+                            <span class="switch-track" aria-hidden="true"></span>
+                            <span class="switch-label">Rename only</span>
+                        </label>
+                    </div>
+
+                    <div class="segmented" role="radiogroup" aria-label="Output structure">
+                        <label class="seg-item active" data-structure="preserve">
+                            <input type="radio" name="output-structure" value="preserve" checked>
+                            <span>Keep Folders</span>
+                        </label>
+                        <label class="seg-item" data-structure="flatten">
+                            <input type="radio" name="output-structure" value="flatten">
+                            <span>Flatten</span>
+                        </label>
+                        <label class="seg-item" data-structure="date">
+                            <input type="radio" name="output-structure" value="date">
+                            <span>By Date</span>
+                        </label>
+                    </div>
+
+                    <!-- Hidden compatibility checkboxes synced with segmented control & presets -->
+                    <input type="checkbox" id="flatten-output" hidden>
+                    <div class="date-chips" id="date-options-row" style="display: none;">
+                        <label class="chip-toggle">
+                            <input type="checkbox" id="category-by-year" checked>
+                            <span>Year folder (2026)</span>
+                        </label>
+                        <label class="chip-toggle">
+                            <input type="checkbox" id="category-by-month">
+                            <span>Month folder (202604__)</span>
+                        </label>
+                    </div>
+
+                    <div class="path-preview" id="path-preview" title="Example output path">
+                        <span class="path-preview-label">Preview:</span>
+                        <code id="path-preview-code">compressed\IMG_001.webp</code>
+                    </div>
+                </section>
+
+                <!-- Image Settings Panel -->
+                <section class="panel" id="image-settings-panel">
+                    <div class="panel-header">
+                        <span class="panel-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                <circle cx="8.5" cy="8.5" r="1.5" />
+                                <polyline points="21 15 16 10 5 21" />
+                            </svg>
+                            Image Compression
+                        </span>
+                        <span class="panel-hint" id="image-card-status">Active</span>
+                    </div>
+
+                    <div class="segmented" role="radiogroup" aria-label="Target image format">
+                        <label class="seg-item">
                             <input type="radio" name="image-format" value="jpeg">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">JPEG</span>
+                            <span>JPEG</span>
                         </label>
-                        <label class="tab-option">
+                        <label class="seg-item active">
                             <input type="radio" name="image-format" value="webp" checked>
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">WebP</span>
+                            <span>WebP</span>
                         </label>
-                        <label class="tab-option">
+                        <label class="seg-item">
                             <input type="radio" name="image-format" value="avif">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">AVIF</span>
+                            <span>AVIF</span>
                         </label>
                     </div>
-                </div>
 
-                <div class="slider-group">
-                    <div class="slider-header">
-                        <span>Quality (0-100)</span>
-                        <span class="slider-value" id="quality-value">88</span>
+                    <div class="slider-block">
+                        <div class="slider-top">
+                            <span class="field-label" style="margin: 0;">Quality</span>
+                            <span class="value-badge" id="quality-badge"><strong id="quality-value">88</strong> · High</span>
+                        </div>
+                        <input type="range" id="quality-slider" class="range-slider" min="1" max="100" value="88">
+                        <div class="slider-scale">
+                            <span>Smaller file</span>
+                            <span>Higher fidelity</span>
+                        </div>
                     </div>
-                    <input type="range" id="quality-slider" class="range-slider" min="1" max="100" value="88">
-                    <span class="slider-hint">Higher = Better Quality</span>
-                </div>
-            </div>
+                </section>
 
-            <!-- Video Settings -->
-            <div class="glass-panel settings-card">
-                <div class="card-header">
-                    <span class="card-icon">🎬</span> Video Compression Settings
-                </div>
+                <!-- Video Settings Panel -->
+                <section class="panel" id="video-settings-panel">
+                    <div class="panel-header">
+                        <span class="panel-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="23 7 16 12 23 17 23 7" />
+                                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                            </svg>
+                            Video Compression
+                        </span>
+                        <span class="panel-hint" id="video-card-status">Active</span>
+                    </div>
 
-                <div class="setting-group">
-                    <label class="input-label">Encoder</label>
-                    <div class="preset-tabs">
-                        <label class="tab-option" id="encoder-nvenc-label">
+                    <div class="encoder-grid" role="radiogroup" aria-label="Video encoder">
+                        <label class="encoder-option" id="encoder-nvenc-label">
                             <input type="radio" name="encoder" value="nvenc">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">NVENC <span class="badge" id="nvenc-badge">N/A</span></span>
+                            <span class="enc-name">NVENC</span>
+                            <span class="enc-badge" id="nvenc-badge">...</span>
                         </label>
-                        <label class="tab-option" id="encoder-amf-label">
+                        <label class="encoder-option" id="encoder-amf-label">
                             <input type="radio" name="encoder" value="amf">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">AMF <span class="badge" id="amf-badge">...</span></span>
+                            <span class="enc-name">AMF</span>
+                            <span class="enc-badge" id="amf-badge">...</span>
                         </label>
-                        <label class="tab-option" id="encoder-qsv-label">
+                        <label class="encoder-option" id="encoder-qsv-label">
                             <input type="radio" name="encoder" value="qsv">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">QSV <span class="badge" id="qsv-badge">N/A</span></span>
+                            <span class="enc-name">QSV</span>
+                            <span class="enc-badge" id="qsv-badge">...</span>
                         </label>
-                        <label class="tab-option">
+                        <label class="encoder-option">
                             <input type="radio" name="encoder" value="x264">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">x264</span>
+                            <span class="enc-name">x264</span>
+                            <span class="enc-badge cpu">CPU</span>
                         </label>
-                        <label class="tab-option">
+                        <label class="encoder-option">
                             <input type="radio" name="encoder" value="x265">
-                            <div class="tab-bg"></div>
-                            <span class="tab-content">x265 <span class="badge"
-                                    style="background: #10b981;">HEVC</span></span>
+                            <span class="enc-name">x265</span>
+                            <span class="enc-badge cpu">HEVC</span>
                         </label>
                     </div>
-                </div>
 
-                <div class="slider-group">
-                    <div class="slider-header">
-                        <span>Quality (CRF 0-51)</span>
-                        <span class="slider-value" id="crf-value">22</span>
+                    <div class="slider-block">
+                        <div class="slider-top">
+                            <span class="field-label" style="margin: 0;">Constant Quality (CRF)</span>
+                            <span class="value-badge" id="crf-badge"><strong id="crf-value">22</strong> · Balanced</span>
+                        </div>
+                        <input type="range" id="crf-slider" class="range-slider" min="0" max="51" value="22">
+                        <div class="slider-scale">
+                            <span>0 (Lossless)</span>
+                            <span>51 (Smallest)</span>
+                        </div>
                     </div>
-                    <input type="range" id="crf-slider" class="range-slider" min="0" max="51" value="22">
-                    <span class="slider-hint">Lower = Better Quality</span>
+                </section>
+            </aside>
+
+            <!-- Right Queue Stage -->
+            <section class="stage">
+                <!-- Non-blocking Resume Banner -->
+                <div class="resume-banner" id="resume-banner" style="display: none;">
+                    <div class="resume-info">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10" />
+                            <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                        <span id="resume-banner-text">Interrupted job found</span>
+                    </div>
+                    <div class="resume-actions">
+                        <button class="btn-primary-sm" id="btn-resume-job">Resume</button>
+                        <button class="btn-ghost-sm" id="btn-dismiss-resume">Dismiss</button>
+                    </div>
+                </div>
+
+                <!-- Queue Panel -->
+                <div class="queue-panel">
+                    <div class="queue-toolbar">
+                        <div class="queue-title-group">
+                            <span class="panel-title">Queue</span>
+                            <span id="file-count" class="queue-stats">No files loaded</span>
+                        </div>
+
+                        <div class="queue-actions">
+                            <div class="filter-pills" role="radiogroup" aria-label="Media type filter">
+                                <label class="type-radio active">
+                                    <input type="radio" name="file-type" value="all" checked>
+                                    <span>All</span>
+                                </label>
+                                <label class="type-radio">
+                                    <input type="radio" name="file-type" value="image">
+                                    <span>Images</span>
+                                </label>
+                                <label class="type-radio">
+                                    <input type="radio" name="file-type" value="video">
+                                    <span>Videos</span>
+                                </label>
+                            </div>
+
+                            <button class="btn-danger-sm" id="btn-retry-failed" style="display: none;">
+                                Retry Failed (<span id="failed-count-badge">0</span>)
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="list-header">
+                        <div>Name</div>
+                        <div>Size</div>
+                        <div>Status</div>
+                    </div>
+
+                    <div class="list-body" id="file-list">
+                        <div class="empty-state">
+                            <div class="empty-icon" aria-hidden="true">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                    <line x1="12" y1="11" x2="12" y2="17" />
+                                    <polyline points="9 14 12 11 15 14" />
+                                </svg>
+                            </div>
+                            <div class="empty-title">Select or drop media to begin</div>
+                            <div class="empty-desc">Choose a Source Folder on the left or drag folders/files directly onto this window.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Failed Files Drawer (shown when failures exist) -->
+                <div class="failed-drawer" id="failed-files-section" style="display: none;">
+                    <div class="failed-drawer-header">
+                        <span class="failed-title">Failed Files</span>
+                        <button class="btn-ghost-sm" id="btn-hide-failed">Hide</button>
+                    </div>
+                    <div class="failed-list" id="failed-files-list"></div>
+                </div>
+
+                <!-- Collapsible Performance Strip -->
+                <div class="metrics-strip" id="metrics-section" style="display: none;">
+                    <div class="metric-cell">
+                        <span class="metric-label">Heap Memory</span>
+                        <span class="metric-value" id="metric-memory">-</span>
+                    </div>
+                    <div class="metric-cell">
+                        <span class="metric-label">Processed</span>
+                        <span class="metric-value" id="metric-processed">0</span>
+                    </div>
+                    <div class="metric-cell">
+                        <span class="metric-label">Failed</span>
+                        <span class="metric-value danger" id="metric-failed">0</span>
+                    </div>
+                    <div class="metric-cell">
+                        <span class="metric-label">Server Uptime</span>
+                        <span class="metric-value" id="metrics-uptime">0s</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Sticky Bottom Action Bar -->
+        <footer class="action-bar">
+            <div class="action-status">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="action-status-text">Select a source folder to queue files</span>
+            </div>
+
+            <div id="progress-section" class="overall-progress">
+                <div class="progress-track">
+                    <div class="progress-fill" id="progress-bar"></div>
+                </div>
+                <div class="progress-meta">
+                    <span id="progress-count">0/0</span>
+                    <span id="progress-text">0%</span>
                 </div>
             </div>
-        </div>
 
-        <!-- File List -->
-        <div class="glass-panel file-list-section">
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0 16px 16px;">
-                <span
-                    style="font-weight: 600; color: var(--text-primary); font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Files
-                    Found</span>
-                <span id="file-count" class="badge"
-                    style="background: rgba(255, 255, 255, 0.1); color: var(--text-secondary);"></span>
+            <div class="action-buttons">
+                <button class="btn-primary" id="btn-start" disabled>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                    <span>Start Compression</span>
+                </button>
+                <button class="btn-danger" id="btn-cancel" style="display: none;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <rect x="4" y="4" width="16" height="16" rx="2" />
+                    </svg>
+                    <span>Stop</span>
+                </button>
             </div>
-            <div class="list-header">
-                <div>Name</div>
-                <div>Size</div>
-                <div>Progress</div>
-            </div>
-
-            <div class="list-body" id="file-list">
-                <div class="file-list-placeholder">
-                    <span>📭 Select folder and click Scan to view files</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Failed Files Section -->
-        <div class="glass-panel failed-files-section" id="failed-files-section" style="display: none;">
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0 16px 16px;">
-                <span style="font-weight: 600; color: var(--accent-danger); font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">⚠️ Failed Files</span>
-                <button class="btn-retry" id="btn-retry-failed">Retry All</button>
-            </div>
-            <div class="list-body" id="failed-files-list"></div>
-        </div>
-
-        <!-- Performance Metrics Section -->
-        <div class="glass-panel metrics-section" id="metrics-section" style="display: none;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-weight: 600; color: var(--text-secondary); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">📊 Performance</span>
-                <span id="metrics-uptime" style="font-size: 12px; color: var(--text-muted);"></span>
-            </div>
-            <div class="metrics-grid" id="metrics-grid">
-                <div class="metric-item">
-                    <span class="metric-label">Memory</span>
-                    <span class="metric-value" id="metric-memory">-</span>
-                </div>
-                <div class="metric-item">
-                    <span class="metric-label">Processed</span>
-                    <span class="metric-value" id="metric-processed">0</span>
-                </div>
-                <div class="metric-item">
-                    <span class="metric-label">Failed</span>
-                    <span class="metric-value" id="metric-failed" style="color: var(--accent-danger);">0</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Bottom Actions -->
-        <div class="action-area">
-            <button class="btn-start" id="btn-start" disabled>
-                <span>Start Compression</span>
-            </button>
-
-            <!-- Progress Bar (Initially Hidden) -->
-            <div id="progress-section" class="total-progress-container">
-                <div class="total-progress-fill" id="progress-bar"></div>
-                <div class="progress-count" id="progress-count">0/0</div>
-                <div class="progress-label" id="progress-text">0%</div>
-            </div>
-
-            <button class="btn-start" id="btn-cancel"
-                style="display: none; background: var(--accent-danger); width: auto; padding: 0 32px; margin-left: 12px;">
-                <span>Stop</span>
-            </button>
-        </div>
-
-        <!-- Summary Removed from here -->
-
+        </footer>
     </div>
 
-    <!-- Summary Modal Overlay -->
-    <div id="summary-modal" class="modal-overlay">
-        <div class="summary-card modal-content">
-            <button class="modal-close" id="btn-close-modal">×</button>
-            <div class="summary-header">
-                <span>🎉 Compression Complete!</span>
+    <!-- Summary Modal -->
+    <div id="summary-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="summary-title">
+        <div class="modal-card">
+            <button class="modal-close" id="btn-close-modal" aria-label="Close summary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+            </button>
+            <div class="modal-badge success" id="summary-badge">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                </svg>
             </div>
+            <h2 class="modal-title" id="summary-title">Compression Complete</h2>
+
             <div class="summary-grid">
-                <div class="summary-item">
-                    <div class="summary-label">Space Saved</div>
-                    <div class="summary-value" id="stat-saved">-</div>
+                <div class="summary-stat">
+                    <span class="summary-label">Space Saved</span>
+                    <span class="summary-value success" id="stat-saved">-</span>
                 </div>
-                <div class="summary-item">
-                    <div class="summary-label">Time Taken</div>
-                    <div class="summary-value time" id="stat-time">-</div>
+                <div class="summary-stat">
+                    <span class="summary-label">Time Taken</span>
+                    <span class="summary-value" id="stat-time">-</span>
                 </div>
-                <div class="summary-item">
-                    <div class="summary-label">Encoder</div>
-                    <div class="summary-value encoder" id="stat-encoder">-</div>
+                <div class="summary-stat">
+                    <span class="summary-label" id="stat-encoder-label">Encoder</span>
+                    <span class="summary-value accent" id="stat-encoder">-</span>
                 </div>
-                <div class="summary-item">
-                    <div class="summary-label">Failed</div>
-                    <div class="summary-value" id="stat-failed" style="color: var(--accent-danger);">0</div>
+                <div class="summary-stat">
+                    <span class="summary-label">Failed</span>
+                    <span class="summary-value danger" id="stat-failed">0</span>
                 </div>
             </div>
-            <div style="display: flex; justify-content: center; gap: 12px; margin-top: 24px;">
-                <button class="btn-start" id="btn-view-failed" style="display: none; background: var(--accent-danger); width: auto; padding: 0 24px; height: 44px; font-size: 14px;">View Failed</button>
-                <button class="btn-start" id="btn-modal-ok" style="width: auto; padding: 0 40px; height: 44px; font-size: 14px;">OK</button>
+
+            <div class="modal-actions">
+                <button class="btn-danger-sm" id="btn-view-failed" style="display: none;">View Failed</button>
+                <button class="btn-primary" id="btn-modal-ok" style="height: 38px; padding: 0 24px;">Done</button>
             </div>
         </div>
     </div>
 
-    <!-- Before/After Preview Modal -->
+    <!-- Reusable Input / Confirm Dialog Modal -->
+    <div id="dialog-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <div class="modal-card modal-sm">
+            <h3 class="dialog-title" id="dialog-title">Confirm</h3>
+            <p class="dialog-message" id="dialog-message"></p>
+            <input type="text" id="dialog-input" class="text-input" style="display: none; margin-top: 12px;">
+            <div class="modal-actions" style="margin-top: 20px;">
+                <button class="btn-secondary" id="dialog-cancel">Cancel</button>
+                <button class="btn-primary" id="dialog-confirm" style="height: 36px; padding: 0 18px;">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
     <script src="renderer.js"></script>
-
-    <!-- Script to handle UI interactions that CSS can't do (like active class on parent) -->
-    <script>
-        // Simple script to handle 'active' class on radio labels for File Type
-        document.querySelectorAll('input[name="file-type"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                document.querySelectorAll('.type-radio').forEach(label => label.classList.remove('active'));
-                e.target.closest('.type-radio').classList.add('active');
-            });
-        });
-
-        // Ensure initial active state
-        document.querySelector('input[name="file-type"]:checked')?.closest('.type-radio')?.classList.add('active');
-
-        // Handle preset tab active state
-        document.querySelectorAll('.preset-tabs input[type="radio"]').forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                const parent = e.target.closest('.preset-tabs');
-                parent.querySelectorAll('.tab-option').forEach(label => label.classList.remove('active'));
-                e.target.closest('.tab-option').classList.add('active');
-            });
-        });
-
-        // Ensure initial active state for preset tabs
-        document.querySelectorAll('.preset-tabs').forEach(tabGroup => {
-            const checked = tabGroup.querySelector('input[type="radio"]:checked');
-            if (checked) {
-                checked.closest('.tab-option').classList.add('active');
-            }
-        });
-    </script>
 </body>
 
 </html>

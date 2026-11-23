@@ -1,74 +1,147 @@
 const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs');
-const { ensureDirectoryExists, getFileSize, formatFileSize, getCompressionRatio, setFileMetadata } = require('./utils');
+const os = require('os');
+const {
+    ensureDirCached,
+    formatFileSize,
+    getCompressionRatio,
+    setFileMetadataAsync
+} = require('./utils');
+const { decodeHeicInWorker } = require('./heicWorker');
 
-// Compression settings for different formats
+// Disable libvips operation cache: batch media compression is one-shot per file,
+// so caching decoded bitmaps only bloats native RSS memory.
+sharp.cache(false);
+
 const COMPRESSION_SETTINGS = {
     jpeg: { mozjpeg: true, quality: 88 },
     jpg: { mozjpeg: true, quality: 88 },
-    png: { compressionLevel: 9, effort: 10 },
-    webp: { quality: 88 },
+    png: { compressionLevel: 9, effort: 7 },
+    webp: { quality: 88, smartSubsample: true },
     avif: { quality: 88 },
     tiff: { compression: 'lzw', quality: 88 },
-    gif: { effort: 10 },
+    gif: { effort: 7 },
     heic: { quality: 88 },
     heif: { quality: 88 }
 };
 
+const FORMAT_ALIASES = {
+    jpg: 'jpeg',
+    tif: 'tiff'
+};
+
+function normalizeFormatName(ext) {
+    const lower = (ext || '').toLowerCase();
+    return FORMAT_ALIASES[lower] || lower;
+}
+
 /**
- * Convert HEIC/HEIF to target format (WebP, JPEG, or AVIF) using heic-convert + Sharp
- * Falls back to Sharp if the file is not a valid HEIC (may be mislabeled)
- * @param {string} inputPath - Path to HEIC file
- * @param {string} outputPath - Path to output file
- * @param {Object} options - Compression options (quality, etc.)
+ * Budget libvips internal threads per Sharp pipeline so workerCount * threads <= maxCores.
+ * @param {number} workerCount
+ * @param {number} [maxCores]
+ * @returns {number}
+ */
+function configureSharpConcurrency(workerCount, maxCores = os.cpus().length || 4) {
+    const budget = Math.max(1, Math.floor(maxCores / Math.max(1, workerCount || 1)));
+    sharp.concurrency(budget);
+    return budget;
+}
+
+/**
+ * Read only the first 16 bytes of a file to detect HEIC/HEIF ftyp magic header.
+ * @param {string} filePath
+ * @returns {Promise<{ hasFtypHeader: boolean, brand: string }>}
+ */
+async function readFtypHeader(filePath) {
+    const header = Buffer.alloc(16);
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+        const { bytesRead } = await handle.read(header, 0, 16, 0);
+        if (bytesRead <= 12) return { hasFtypHeader: false, brand: '' };
+        const hasFtypHeader = header.toString('ascii', 4, 8) === 'ftyp';
+        const brand = header.toString('ascii', 8, 12);
+        return { hasFtypHeader, brand };
+    } finally {
+        await handle.close();
+    }
+}
+
+function applySharpFormat(pipeline, targetFormat, settings) {
+    const quality = settings.quality || 88;
+    switch (targetFormat) {
+        case 'jpg':
+        case 'jpeg':
+            return pipeline.jpeg({
+                mozjpeg: settings.mozjpeg !== false,
+                quality
+            });
+        case 'png':
+            return pipeline.png({
+                compressionLevel: settings.compressionLevel || 9,
+                effort: settings.effort || 7
+            });
+        case 'webp':
+            return pipeline.webp({
+                quality,
+                smartSubsample: settings.smartSubsample !== false
+            });
+        case 'avif':
+            return pipeline.avif({ quality });
+        case 'tiff':
+            return pipeline.tiff({
+                compression: settings.compression || 'lzw',
+                quality
+            });
+        case 'gif':
+            return pipeline.gif({
+                effort: settings.effort || 7
+            });
+        case 'heic':
+        case 'heif':
+            return pipeline.heif({
+                quality,
+                compression: settings.compression || 'hevc'
+            });
+        default:
+            return pipeline.jpeg({
+                mozjpeg: true,
+                quality
+            });
+    }
+}
+
+/**
+ * Convert HEIC/HEIF to target format off the main thread (heic-decode -> raw RGBA -> Sharp).
+ * Falls back to Sharp directly if the file is mislabeled (e.g. a JPEG saved as .heic).
+ * @param {string} inputPath
+ * @param {string} outputPath
+ * @param {Object} options
  * @returns {Promise<{success: boolean, usedFallback: boolean}>}
  */
-async function convertHeicToJpeg(inputPath, outputPath, options = {}) {
-    const inputBuffer = fs.readFileSync(inputPath);
+async function convertHeicToTarget(inputPath, outputPath, options = {}) {
     const quality = options.quality || 88;
-    const targetFormat = options.targetFormat || 'jpeg';
+    const targetFormat = options.targetFormat || 'webp';
+    const settings = { ...COMPRESSION_SETTINGS[targetFormat], ...options, quality };
 
-    const formatMap = {
-        jpeg: 'jpeg',
-        jpg: 'jpeg',
-        webp: 'webp',
-        avif: 'avif'
-    };
-    const sharpFormat = formatMap[targetFormat] || 'jpeg';
-
-    const hasFtypHeader = inputBuffer.length > 12 &&
-        inputBuffer.toString('ascii', 4, 8) === 'ftyp';
-
-    const brand = inputBuffer.length > 12 ? inputBuffer.toString('ascii', 8, 12) : '';
+    const { hasFtypHeader, brand } = await readFtypHeader(inputPath);
     const heicBrands = ['heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1', 'miaf'];
-    const isLikelyHeic = hasFtypHeader && heicBrands.some(b => brand.toLowerCase().startsWith(b.toLowerCase()));
+    const isLikelyHeic = hasFtypHeader && heicBrands.some(b => brand.toLowerCase().startsWith(b));
 
     if (isLikelyHeic) {
         try {
-            const convert = (await import('heic-convert')).default;
-
-            const rawJpegBuffer = await convert({
-                buffer: inputBuffer,
-                format: 'JPEG',
-                quality: 1
+            const decoded = await decodeHeicInWorker(inputPath);
+            let pipeline = sharp(decoded.data, {
+                raw: {
+                    width: decoded.width,
+                    height: decoded.height,
+                    channels: 4
+                }
             });
-
-            let pipeline = sharp(rawJpegBuffer)
-                .rotate()
-                .withMetadata();
-
-            if (sharpFormat === 'jpeg') {
-                pipeline = pipeline.jpeg({ mozjpeg: true, quality });
-            } else if (sharpFormat === 'webp') {
-                pipeline = pipeline.webp({ quality });
-            } else if (sharpFormat === 'avif') {
-                pipeline = pipeline.avif({ quality });
-            }
-
+            pipeline = applySharpFormat(pipeline, targetFormat, settings);
             await pipeline.toFile(outputPath);
             return { success: true, usedFallback: false };
-        } catch (heicError) {
+        } catch {
             console.log(`    ⚠️  HEIC decode failed, trying Sharp fallback...`);
         }
     }
@@ -77,18 +150,10 @@ async function convertHeicToJpeg(inputPath, outputPath, options = {}) {
         let pipeline = sharp(inputPath)
             .rotate()
             .withMetadata();
-
-        if (sharpFormat === 'jpeg') {
-            pipeline = pipeline.jpeg({ mozjpeg: true, quality });
-        } else if (sharpFormat === 'webp') {
-            pipeline = pipeline.webp({ quality });
-        } else if (sharpFormat === 'avif') {
-            pipeline = pipeline.avif({ quality });
-        }
-
+        pipeline = applySharpFormat(pipeline, targetFormat, settings);
         await pipeline.toFile(outputPath);
         return { success: true, usedFallback: true };
-    } catch (sharpError) {
+    } catch {
         const fileName = path.basename(inputPath);
         throw new Error(
             `Unable to process HEIC file "${fileName}". ` +
@@ -108,22 +173,30 @@ async function convertHeicToJpeg(inputPath, outputPath, options = {}) {
 async function compressImage(inputPath, outputPath, options = {}) {
     const inputExt = path.extname(inputPath).toLowerCase().slice(1);
     const outputExt = path.extname(outputPath).toLowerCase().slice(1);
-    const originalSize = getFileSize(inputPath);
+    const originalSize = typeof options.originalSize === 'number'
+        ? options.originalSize
+        : (await fs.promises.stat(inputPath).then(s => s.size).catch(() => 0));
 
-    // Ensure output directory exists
-    ensureDirectoryExists(outputPath);
+    if (originalSize === 0) {
+        throw new Error('Empty 0-byte image file');
+    }
 
-    // Use output extension for format selection (enables HEIC→PNG conversion)
-    const targetFormat = outputExt || inputExt;
+    if (!options.skipDirCheck) {
+        ensureDirCached(path.dirname(outputPath));
+    }
+
+    const sourceFormat = (options.actualFormat || inputExt).toLowerCase();
+    const targetFormat = outputExt || sourceFormat;
     const formatSettings = COMPRESSION_SETTINGS[targetFormat] || COMPRESSION_SETTINGS.jpeg;
     const settings = { ...formatSettings, ...options };
 
-    // Special handling for HEIC/HEIF input (Sharp lacks HEIF plugin on most systems)
-    // Use heic-convert package for native HEIC decoding, with Sharp fallback
-    if (inputExt === 'heic' || inputExt === 'heif') {
-        const result = await convertHeicToJpeg(inputPath, outputPath, { quality: settings.quality, targetFormat });
+    if (sourceFormat === 'heic' || sourceFormat === 'heif') {
+        const result = await convertHeicToTarget(inputPath, outputPath, {
+            quality: settings.quality,
+            targetFormat
+        });
 
-        const compressedSize = getFileSize(outputPath);
+        const compressedSize = await fs.promises.stat(outputPath).then(s => s.size).catch(() => 0);
         const conversionNote = result.usedFallback
             ? ' (converted via Sharp fallback)'
             : ' (converted from HEIC)';
@@ -139,79 +212,30 @@ async function compressImage(inputPath, outputPath, options = {}) {
         };
     }
 
-    // Create sharp instance for non-HEIC files
-    // .rotate() without arguments auto-rotates based on EXIF orientation
-    // .withMetadata() preserves EXIF data including GPS location, date, etc.
+    const samePath = path.resolve(inputPath) === path.resolve(outputPath);
+    const writePath = samePath
+        ? `${outputPath}.tmp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${targetFormat || 'tmp'}`
+        : outputPath;
 
     try {
         let pipeline = sharp(inputPath).rotate().withMetadata();
+        pipeline = applySharpFormat(pipeline, targetFormat, settings);
+        await pipeline.toFile(writePath);
 
-        // Apply format-specific compression based on OUTPUT format
-        switch (targetFormat) {
-            case 'jpg':
-            case 'jpeg':
-                pipeline = pipeline.jpeg({
-                    mozjpeg: settings.mozjpeg !== false,
-                    quality: settings.quality || 88
-                });
-                break;
-            case 'png':
-                pipeline = pipeline.png({
-                    compressionLevel: settings.compressionLevel || 9,
-                    effort: settings.effort || 10
-                });
-                break;
-            case 'webp':
-                pipeline = pipeline.webp({
-                    quality: settings.quality || 88
-                });
-                break;
-            case 'avif':
-                pipeline = pipeline.avif({
-                    quality: settings.quality || 88
-                });
-                break;
-            case 'tiff':
-                pipeline = pipeline.tiff({
-                    compression: settings.compression || 'lzw',
-                    quality: settings.quality || 88
-                });
-                break;
-            case 'gif':
-                pipeline = pipeline.gif({
-                    effort: settings.effort || 10
-                });
-                break;
-            case 'heic':
-            case 'heif':
-                pipeline = pipeline.heif({
-                    quality: settings.quality || 88,
-                    compression: settings.compression || 'hevc'
-                });
-                break;
-            default:
-                // For unsupported formats, try to convert to jpeg
-                pipeline = pipeline.jpeg({
-                    mozjpeg: true,
-                    quality: settings.quality || 88
-                });
+        if (samePath) {
+            await fs.promises.rename(writePath, outputPath);
         }
 
-        // Write output
-        await pipeline.toFile(outputPath);
-
-        let compressedSize = getFileSize(outputPath);
+        let compressedSize = await fs.promises.stat(outputPath).then(s => s.size).catch(() => 0);
         let note = '';
 
-        // Check if we're converting formats (e.g., HEIC to PNG)
-        const isConvertingFormat = inputExt !== targetFormat;
+        const isConvertingFormat = normalizeFormatName(sourceFormat) !== normalizeFormatName(targetFormat);
 
-        // Use original file if compressed is larger, but ONLY if not converting formats
-        // When converting formats, we must keep the converted version for compatibility
         if (compressedSize > originalSize && !isConvertingFormat) {
-            fs.copyFileSync(inputPath, outputPath);
-            // Force metadata update immediately
-            setFileMetadata(inputPath, outputPath);
+            if (!samePath) {
+                await fs.promises.copyFile(inputPath, outputPath);
+            }
+            await setFileMetadataAsync(inputPath, outputPath);
             compressedSize = originalSize;
             note = ' (used original, compressed was larger)';
         } else if (compressedSize > originalSize && isConvertingFormat) {
@@ -229,11 +253,14 @@ async function compressImage(inputPath, outputPath, options = {}) {
             success: true
         };
     } catch (sharpError) {
-        // Handle corrupted or malformed images (e.g., "Invalid SOS parameters for sequential JPEG")
-        // Copy original file as fallback
+        if (samePath) {
+            await fs.promises.unlink(writePath).catch(() => {});
+        }
         console.log(`    ⚠️  Image processing failed (${sharpError.message}), copying original...`);
-        fs.copyFileSync(inputPath, outputPath);
-        setFileMetadata(inputPath, outputPath);
+        if (!samePath) {
+            await fs.promises.copyFile(inputPath, outputPath);
+        }
+        await setFileMetadataAsync(inputPath, outputPath);
 
         return {
             input: inputPath,
@@ -258,6 +285,7 @@ function getSupportedExtensions() {
 
 module.exports = {
     compressImage,
+    configureSharpConcurrency,
     getSupportedExtensions,
     COMPRESSION_SETTINGS
 };

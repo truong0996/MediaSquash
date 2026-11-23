@@ -1,51 +1,49 @@
 # MediaSquash
 
-A powerful Node.js tool for compressing images and videos with **GPU acceleration**. Available as a standalone **Electron Desktop App** or a **Web GUI**.
+Fast, local-first image and video batch compressor with **GPU acceleration**, available as an **Electron Desktop App**, **Local Web GUI**, and **CLI**.
 
-## ✨ Key Features
+## Features
 
-- **🖥️ Desktop App**: Standalone Electron application with native file dialogs and drag-and-drop
-- **🎮 GPU Acceleration**: Automatic NVIDIA NVENC, AMD AMF, Intel QuickSync detection
-- **🌐 Web GUI**: Modern interface accessible via browser at `http://localhost:3847`
-- **⚡ Parallel Processing**: Smart concurrency tuned for images and videos
-- **📁 Modern Formats**: WebP (default), AVIF, JPEG for images | H.264/H.265 for videos
-- **📅 Smart Renaming**: Rename files by capture date (EXIF/metadata)
-- **🔒 Metadata Preservation**: Keeps GPS location, dates, and EXIF data
+- **Desktop App & Web GUI**: Tactile Studio Workbench UI (`127.0.0.1:3847`) with drag-and-drop, presets, live output path preview, and light/dark themes
+- **GPU Acceleration**: Automatic 10-bit HEVC detection for NVIDIA NVENC, AMD AMF, and Intel QuickSync, plus x264/x265 CPU fallbacks
+- **Smart Concurrency & Optimization**:
+  - Budgeted CPU/GPU worker pools with Largest-First video scheduling
+  - Off-main-thread HEIC decoding (`worker_threads`) directly to WebP, AVIF, or JPEG
+  - Lossless AAC audio stream copy (`-c:a copy`) when already compatible, and automatic hardware-decode fallback
+- **Date Organization & Resume**: Capture-date renaming/grouping (EXIF, video metadata, and Google Takeout JSON sidecars) plus pause/resume and failed-file retry
 
-## 📦 Installation
+## Installation
 
 ```bash
 npm install
 ```
 
-## 🚀 Usage
+## Usage
 
 ### Desktop App
 
-**Development:**
 ```bash
 npm start
 ```
 
-**Build for Windows:**
+Build Windows portable & installer executables into `dist/`:
+
 ```bash
 npm run dist:win
 ```
-Artifacts are output to the `dist/` folder.
 
-### Web Interface
+### Web GUI
 
 ```bash
 npm run gui
 ```
-Open `http://localhost:3847` in your browser.
 
-> **Note**: Native file dialogs and drag-and-drop for individual files require the Desktop App. The web interface supports folder path input and folder drag-and-drop.
+Open `http://localhost:3847` in your browser. *(Native folder dialogs and individual file drag-and-drop require the Desktop App; the Web GUI supports folder paths and folder drops.)*
 
 ### CLI
 
 ```bash
-# Batch compress
+# Batch compress images and videos
 node src/index.js all ./input -o ./output --recursive
 
 # Single image
@@ -55,23 +53,20 @@ node src/index.js image input.jpg -o output.webp -q 88
 node src/index.js video input.mp4 -o output.mp4 -e x265 -c 22
 ```
 
-## 🎛️ Supported Encoders
+## Supported Formats & Encoders
 
-| Encoder | Type | Speed | Quality |
-|---------|------|-------|---------|
-| NVENC | NVIDIA GPU | ⚡⚡⚡ | Good |
-| AMF | AMD GPU | ⚡⚡⚡ | Good |
-| QuickSync | Intel GPU | ⚡⚡⚡ | Good |
-| x264 | CPU | 🐢 | Better |
-| x265 | CPU (HEVC) | 🐢🐢 | Best |
+- **Images**: JPEG, PNG, WebP, AVIF, TIFF, GIF, HEIC, HEIF → outputs `.webp` (default), `.jpeg`, or `.avif`
+- **Videos**: MP4, MKV, AVI, MOV, WMV, FLV, WebM, 3GP, M4V, MPEG, MPG → outputs `.mp4`
+- **Encoders**: `nvenc` (NVIDIA GPU), `amf` (AMD GPU), `qsv` (Intel iGPU), `x264` (CPU), `x265` (CPU HEVC)
 
-## 📁 Supported Formats
+## Testing & Developer Guide
 
-**Images**: JPEG, PNG, WebP, AVIF, TIFF, GIF, HEIC, HEIF  
-**Videos**: MP4, MKV, AVI, MOV, WMV, FLV, WebM, 3GP, M4V, MPEG, MPG
+```bash
+npm run test:all
+```
 
-**Output**: `.webp` (default), `.jpeg`, `.avif` for images | `.mp4` for videos
+For architecture notes, concurrency invariants, and contributor conventions, see [CLAUDE.md](CLAUDE.md).
 
-## 📜 License
+## License
 
 MIT

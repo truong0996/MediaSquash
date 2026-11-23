@@ -1,10 +1,15 @@
+const os = require('os');
+if (!process.env.UV_THREADPOOL_SIZE) {
+    const cpuCount = os.cpus().length || 4;
+    process.env.UV_THREADPOOL_SIZE = String(Math.min(Math.max(cpuCount, 8), 16));
+}
+
 const { app, BrowserWindow, shell, dialog, ipcMain } = require('electron');
 const path = require('path');
 const logger = require('./src/logger');
 
 logger.info('App starting...');
 
-// Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
     logger.info('Duplicate instance detected, quitting.');
@@ -15,7 +20,10 @@ function createWindow(port) {
     logger.info('Creating window...');
     const mainWindow = new BrowserWindow({
         width: 1280,
-        height: 800,
+        height: 820,
+        minWidth: 900,
+        minHeight: 640,
+        backgroundColor: '#0E0F11',
         icon: path.join(__dirname, 'gui', 'icon.png'),
         webPreferences: {
             nodeIntegration: false,
@@ -45,14 +53,15 @@ process.env.ELECTRON_APP = 'true';
 
 let serverReady;
 let serverPort = process.env.PORT || 3847;
+let cleanupServerProcesses = null;
 
 try {
     logger.info('Starting server...');
     const serverPromise = require('./server.js');
-    // Start server if it exports a Promise
     if (typeof serverPromise === 'object' && serverPromise instanceof Promise) {
         serverReady = serverPromise.then((serverInfo) => {
             serverPort = serverInfo?.port || serverPort;
+            cleanupServerProcesses = serverInfo?.cleanupActiveProcesses || null;
             logger.info('Server started successfully');
         }).catch(err => {
             logger.error('Server failed to start (promise rejected): ' + err.stack);
@@ -74,9 +83,8 @@ async function handleOpenDialog() {
     });
     if (canceled) {
         return;
-    } else {
-        return filePaths[0];
     }
+    return filePaths[0];
 }
 
 app.whenReady().then(async () => {
@@ -90,6 +98,12 @@ app.whenReady().then(async () => {
             createWindow(serverPort);
         }
     });
+});
+
+app.on('before-quit', () => {
+    if (typeof cleanupServerProcesses === 'function') {
+        cleanupServerProcesses();
+    }
 });
 
 app.on('window-all-closed', () => {

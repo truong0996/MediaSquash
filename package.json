@@ -17,7 +17,7 @@
         "dist:all": "electron-builder --win --mac --linux",
         "postinstall": "electron-builder install-app-deps",
         "test": "node src/test/validation.test.js",
-        "test:all": "node src/test/validation.test.js && node src/test/imageCompressor.test.js && node src/test/videoCompressor.test.js && node src/test/hwEncoder.test.js"
+        "test:all": "node src/test/validation.test.js && node src/test/imageCompressor.test.js && node src/test/videoCompressor.test.js && node src/test/hwEncoder.test.js && node src/test/concurrencyAndPerf.test.js"
     },
     "build": {
         "appId": "com.mediasquash.app",

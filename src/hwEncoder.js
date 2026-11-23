@@ -1,40 +1,35 @@
 /**
  * Hardware Encoder Detection and Configuration Module
- * 
+ *
  * Supports:
  * - NVIDIA NVENC (hevc_nvenc) - Fastest, lowest CPU usage, 10-bit
  * - AMD AMF (hevc_amf) - For AMD GPUs and APUs, 10-bit
  * - Intel QuickSync (hevc_qsv) - Good fallback for Intel CPUs, 10-bit
- * - Software x265 (libx265) - Universal fallback, 10-bit
+ * - Software x264 (libx264) & x265 (libx265) - Universal fallbacks
  */
 
-const { exec } = require('child_process');
-const path = require('path');
+const { execFile } = require('child_process');
 const { getFFmpegPath: resolveFFmpegPath } = require('./utils');
 
-// Try to use system FFmpeg first, fallback to ffmpeg-static
 let ffmpegPath = resolveFFmpegPath();
 
-// Encoder configurations optimized for quality/speed balance
 const ENCODER_CONFIGS = {
     nvenc: {
         name: 'NVIDIA NVENC (HEVC 10-bit)',
         codec: 'hevc_nvenc',
-        // p4 preset is balanced, -cq is quality-based VBR (similar to CRF)
-        // -pix_fmt p010le for 10-bit HEVC
         getOutputOptions: (crf) => [
             '-pix_fmt p010le',
             '-preset p4',
             '-rc vbr',
+            '-b:v 0',
             `-cq ${crf}`,
             '-profile:v main10',
+            '-tag:v hvc1'
         ]
     },
     amf: {
         name: 'AMD AMF (HEVC 10-bit)',
         codec: 'hevc_amf',
-        // quality preset, qp_i/qp_p for quality control (similar to CRF)
-        // -pix_fmt p010le for 10-bit HEVC
         getOutputOptions: (crf) => [
             '-pix_fmt p010le',
             '-quality quality',
@@ -42,13 +37,13 @@ const ENCODER_CONFIGS = {
             `-qp_p ${crf}`,
             '-profile:v main10',
             '-preanalysis 1',
-            '-vbaq 1'   
+            '-vbaq 1',
+            '-tag:v hvc1'
         ]
     },
     qsv: {
         name: 'Intel QuickSync (HEVC 10-bit)',
         codec: 'hevc_qsv',
-        // -pix_fmt p010le for 10-bit HEVC
         getOutputOptions: (crf) => [
             '-pix_fmt p010le',
             '-preset medium',
@@ -56,13 +51,13 @@ const ENCODER_CONFIGS = {
             '-profile:v main10',
             '-look_ahead 1',
             '-look_ahead_depth 40',
-            '-extbrc 1'
+            '-extbrc 1',
+            '-tag:v hvc1'
         ]
     },
     x264: {
         name: 'Software (x264)',
         codec: 'libx264',
-        // Medium preset: good quality/speed balance for users who prioritize quality
         getOutputOptions: (crf, preset = 'medium', threads = 0) => [
             `-crf ${crf}`,
             `-preset ${preset}`,
@@ -72,77 +67,58 @@ const ENCODER_CONFIGS = {
     x265: {
         name: 'Software (x265/HEVC)',
         codec: 'libx265',
-        // x265 CRF scale is slightly different - same number = better quality than x264
-        // So CRF 22 in x265 ≈ CRF 20 in x264 quality, but 40% smaller file
         getOutputOptions: (crf, preset = 'medium', threads = 0) => [
             `-crf ${crf}`,
             `-preset ${preset}`,
             `-threads ${threads}`,
-            '-pix_fmt yuv420p10le', // 10-bit color depth
-            '-profile:v main10',    // Main 10 profile for HDR/10-bit
-            '-tag:v hvc1'  // Apple/QuickTime compatibility tag
+            '-pix_fmt yuv420p10le',
+            '-profile:v main10',
+            '-tag:v hvc1'
         ]
     }
 };
 
-// Cache for encoder availability (avoid repeated detection).
-// The in-flight promise is cached too: detection costs several FFmpeg spawns
-// plus a test encode per encoder, and every video worker asks for it at once
-// on startup, so caching only the settled result lets them all race and
-// duplicate the whole probe.
 let encoderCache = null;
 let encoderDetectionInFlight = null;
 
 /**
- * Run FFmpeg command and return stdout
- * @param {string} args - FFmpeg arguments
- * @returns {Promise<string>}
+ * Run FFmpeg with execFile (avoids shell overhead) and return combined output.
+ * @param {string[]} args
+ * @param {number} [timeout=8000]
+ * @returns {Promise<{ error: Error|null, output: string }>}
  */
-function runFFmpeg(args) {
-    return new Promise((resolve, reject) => {
-        exec(`"${ffmpegPath}" ${args}`, { timeout: 10000 }, (error, stdout, stderr) => {
-            // FFmpeg outputs to stderr for info commands
-            resolve(stderr || stdout || '');
+function runFFmpegArgs(args, timeout = 8000) {
+    return new Promise((resolve) => {
+        execFile(ffmpegPath, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+            resolve({ error, output: `${stderr || ''}\n${stdout || ''}` });
         });
     });
 }
 
 /**
- * Check if a specific encoder is available
- * @param {string} encoderName - Encoder name (e.g., 'h264_nvenc')
- * @returns {Promise<boolean>}
- */
-async function isEncoderAvailable(encoderName) {
-    try {
-        const output = await runFFmpeg(`-hide_banner -encoders`);
-        // Check if encoder is listed and not marked as unavailable
-        const regex = new RegExp(`\\s${encoderName}\\s`, 'i');
-        return regex.test(output);
-    } catch {
-        return false;
-    }
-}
-
-/**
- * Test if encoder actually works (not just listed)
- * @param {string} encoderName - Encoder name
+ * Test if a hardware encoder actually works for 10-bit main10 encoding.
+ * @param {string} encoderName
  * @returns {Promise<boolean>}
  */
 async function testEncoder(encoderName) {
-    return new Promise((resolve) => {
-        // Create a simple test: encode 1 frame of null video
-        const testCmd = `"${ffmpegPath}" -hide_banner -f lavfi -i nullsrc=s=256x256:d=0.1 -c:v ${encoderName} -f null -`;
-
-        exec(testCmd, { timeout: 15000 }, (error) => {
-            resolve(!error);
-        });
-    });
+    const { error } = await runFFmpegArgs([
+        '-hide_banner',
+        '-f', 'lavfi',
+        '-i', 'nullsrc=s=256x256:d=0.1',
+        '-frames:v', '1',
+        '-pix_fmt', 'p010le',
+        '-c:v', encoderName,
+        '-profile:v', 'main10',
+        '-f', 'null',
+        '-'
+    ], 6000);
+    return !error;
 }
 
 /**
- * Detect all available hardware encoders
- * @param {boolean} forceRecheck - Force re-detection even if cached
- * @returns {Promise<Object>} - { nvenc: boolean, amf: boolean, qsv: boolean, cpu: boolean }
+ * Detect all available hardware encoders (single -encoders list + parallel probes).
+ * @param {boolean} [forceRecheck=false]
+ * @returns {Promise<Object>}
  */
 async function detectAvailableEncoders(forceRecheck = false) {
     if (encoderCache && !forceRecheck) {
@@ -165,45 +141,32 @@ async function runEncoderDetection() {
         nvenc: false,
         amf: false,
         qsv: false,
-        x264: true, // Always available (CPU-based H.264)
-        x265: true // Always available (CPU-based HEVC)
+        x264: true,
+        x265: true
     };
 
-    // Check NVENC (NVIDIA)
-    if (await isEncoderAvailable('hevc_nvenc')) {
-        results.nvenc = await testEncoder('hevc_nvenc');
-        if (results.nvenc) {
-            console.log('  ✓ NVIDIA NVENC: Available');
-        } else {
-            console.log('  ✗ NVIDIA NVENC: Listed but not working (driver issue?)');
-        }
-    } else {
-        console.log('  ✗ NVIDIA NVENC: Not available');
-    }
+    const { output: encoderList } = await runFFmpegArgs(['-hide_banner', '-encoders'], 8000);
+    const hasEncoder = (name) => new RegExp(`\\s${name}\\s`, 'i').test(encoderList);
 
-    // Check AMF (AMD)
-    if (await isEncoderAvailable('hevc_amf')) {
-        results.amf = await testEncoder('hevc_amf');
-        if (results.amf) {
-            console.log('  ✓ AMD AMF: Available');
-        } else {
-            console.log('  ✗ AMD AMF: Listed but not working (driver issue?)');
-        }
-    } else {
-        console.log('  ✗ AMD AMF: Not available');
-    }
+    const probes = [
+        { key: 'nvenc', codec: 'hevc_nvenc', label: 'NVIDIA NVENC' },
+        { key: 'amf', codec: 'hevc_amf', label: 'AMD AMF' },
+        { key: 'qsv', codec: 'hevc_qsv', label: 'Intel QuickSync' }
+    ];
 
-    // Check QuickSync (Intel)
-    if (await isEncoderAvailable('hevc_qsv')) {
-        results.qsv = await testEncoder('hevc_qsv');
-        if (results.qsv) {
-            console.log('  ✓ Intel QuickSync: Available');
-        } else {
-            console.log('  ✗ Intel QuickSync: Listed but not working');
+    await Promise.all(probes.map(async ({ key, codec, label }) => {
+        if (!hasEncoder(codec)) {
+            console.log(`  ✗ ${label}: Not available`);
+            return;
         }
-    } else {
-        console.log('  ✗ Intel QuickSync: Not available');
-    }
+        const works = await testEncoder(codec);
+        results[key] = works;
+        if (works) {
+            console.log(`  ✓ ${label}: Available`);
+        } else {
+            console.log(`  ✗ ${label}: Listed but not working (driver issue?)`);
+        }
+    }));
 
     console.log('  ✓ Software x264: Always available');
     console.log('  ✓ Software x265 (HEVC): Always available\n');
@@ -214,8 +177,8 @@ async function runEncoderDetection() {
 
 /**
  * Get the best available encoder
- * Priority: NVENC > AMF > QSV > CPU
- * @returns {Promise<string>} - 'nvenc', 'amf', 'qsv', or 'cpu'
+ * Priority: NVENC > AMF > QSV > x264
+ * @returns {Promise<string>}
  */
 async function getBestEncoder() {
     const available = await detectAvailableEncoders();
@@ -228,15 +191,14 @@ async function getBestEncoder() {
 
 /**
  * Get encoder configuration
- * @param {string} encoder - 'auto', 'nvenc', 'amf', 'qsv', 'x264', or 'x265'
- * @returns {Promise<Object>} - { name, codec, getOutputOptions }
+ * @param {string} [encoder='auto']
+ * @returns {Promise<Object>}
  */
 async function getEncoderConfig(encoder = 'auto') {
     if (encoder === 'auto') {
         encoder = await getBestEncoder();
     }
 
-    // Validate encoder is available
     const available = await detectAvailableEncoders();
 
     if (encoder === 'nvenc' && !available.nvenc) {
@@ -254,8 +216,6 @@ async function getEncoderConfig(encoder = 'auto') {
         encoder = 'x264';
     }
 
-    // x265 is always available (CPU-based)
-
     return {
         type: encoder,
         ...ENCODER_CONFIGS[encoder]
@@ -264,11 +224,11 @@ async function getEncoderConfig(encoder = 'auto') {
 
 /**
  * Set custom FFmpeg path
- * @param {string} customPath - Path to FFmpeg executable
+ * @param {string} customPath
  */
 function setFFmpegPath(customPath) {
     ffmpegPath = customPath;
-    encoderCache = null; // Reset cache when path changes
+    encoderCache = null;
     encoderDetectionInFlight = null;
 }
 

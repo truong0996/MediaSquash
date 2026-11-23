@@ -1,68 +1,65 @@
 #!/usr/bin/env node
 
+const os = require('os');
+if (!process.env.UV_THREADPOOL_SIZE) {
+    const cpuCount = os.cpus().length || 4;
+    process.env.UV_THREADPOOL_SIZE = String(Math.min(Math.max(cpuCount, 8), 16));
+}
+
 const { program } = require('commander');
 const chalk = require('chalk');
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
-const { compressImage } = require('./imageCompressor');
-const { compressVideo } = require('./videoCompressor');
-const { isImage, isVideo, generateOutputPath, normalizeOutputExtension, formatFileSize, getCompressionRatio, getOptimalConcurrency, getRecommendedVideoConcurrency, parallelProcess, getFilesRecursive, ensureDirectoryExists, getCaptureDate, formatDateForFilename, formatDateForFolder, setFileMetadata, clearCaptureDateCache, setCaptureDateCached, validateQuality, validateCrf, validateImageFormat, validateEncoder } = require('./utils');
+const { compressImage, configureSharpConcurrency } = require('./imageCompressor');
+const { compressVideo, getAdaptiveCrf } = require('./videoCompressor');
+const { getEncoderConfig } = require('./hwEncoder');
+const { shutdownHeicPool } = require('./heicWorker');
+const {
+    isImage,
+    isVideo,
+    generateOutputPath,
+    normalizeOutputExtension,
+    formatFileSize,
+    getCompressionRatio,
+    getOptimalConcurrency,
+    getRecommendedVideoConcurrency,
+    getOptimalVideoThreads,
+    parallelProcess,
+    scanFilesAsync,
+    ensureDirCached,
+    getCaptureDate,
+    formatDateForFilename,
+    formatDateForFolder,
+    setFileMetadataAsync,
+    clearCaptureDateCache,
+    inspectMediaFile,
+    probeVideo,
+    evictProbeCache,
+    validateQuality,
+    validateCrf,
+    validateImageFormat,
+    validateEncoder
+} = require('./utils');
 
-// Package info
 const packageJson = require('../package.json');
-
-// Track active FFmpeg processes for cleanup
 const activeProcesses = new Set();
 
-/**
- * Clean up active processes on exit
- */
 function cleanup() {
     if (activeProcesses.size > 0) {
         console.log(chalk.yellow(`\n🧹 Cleaning up ${activeProcesses.size} active FFmpeg process(es)...`));
         for (const proc of activeProcesses) {
             try {
                 proc.kill('SIGKILL');
-            } catch (err) {
-                // Ignore errors during cleanup
-            }
+            } catch {}
         }
         activeProcesses.clear();
     }
 }
 
-// Handle process signals
 process.on('SIGINT', () => {
     cleanup();
     process.exit(0);
 });
-
-async function getFinalOutputPath(inputPath, options, defaultOutputPath) {
-    // Use the target image format if provided
-    const imageFormat = options.imageFormat || 'webp';
-    const normalizedPath = normalizeOutputExtension(defaultOutputPath, imageFormat);
-
-    if (!options.rename) return normalizedPath;
-
-    // If rename is on, we recalculate the filename part
-    const date = await getCaptureDate(inputPath);
-    if (!date) return normalizedPath;
-
-    const newName = formatDateForFilename(date);
-    const ext = path.extname(normalizedPath); // Use normalized extension
-    const dir = path.dirname(normalizedPath); // Use the directory determined by the caller
-
-    let finalPath = path.join(dir, `${newName}${ext}`);
-    let counter = 1;
-
-    while (fs.existsSync(finalPath)) {
-        finalPath = path.join(dir, `${newName}_${counter}${ext}`);
-        counter++;
-    }
-
-    return finalPath;
-}
 
 process.on('SIGTERM', () => {
     cleanup();
@@ -71,11 +68,39 @@ process.on('SIGTERM', () => {
 
 process.on('exit', cleanup);
 
-// NEW HELPER: Generic directory processor to support batching in 'image', 'video', and 'all' commands
+async function getFinalOutputPath(inputPath, options, defaultOutputPath, reservedPaths = null, actualType = null) {
+    const imageFormat = validateImageFormat(options.imageFormat || 'webp');
+    const normalizedPath = normalizeOutputExtension(defaultOutputPath, imageFormat, actualType);
+
+    let candidateBase = normalizedPath;
+    if (options.rename) {
+        const date = await getCaptureDate(inputPath);
+        if (date) {
+            const newName = formatDateForFilename(date);
+            const ext = path.extname(normalizedPath);
+            const dir = path.dirname(normalizedPath);
+            candidateBase = path.join(dir, `${newName}${ext}`);
+        }
+    }
+
+    const ext = path.extname(candidateBase);
+    const name = path.basename(candidateBase, ext);
+    const dir = path.dirname(candidateBase);
+
+    let finalPath = candidateBase;
+    let counter = 1;
+    // Synchronous loop guarantees atomic collision-free reservation across concurrent workers
+    while ((reservedPaths && reservedPaths.has(finalPath)) || fs.existsSync(finalPath)) {
+        finalPath = path.join(dir, `${name}_${counter}${ext}`);
+        counter++;
+    }
+
+    if (reservedPaths) reservedPaths.add(finalPath);
+    return finalPath;
+}
+
 async function processDirectory(inputDir, options, type = 'all') {
     const startTime = Date.now();
-
-    // Force renaming if rename-only is used
     if (options.renameOnly) options.rename = true;
 
     try {
@@ -87,83 +112,49 @@ async function processDirectory(inputDir, options, type = 'all') {
         }
 
         const outputDir = options.output ? path.resolve(options.output) : path.join(inputPath, 'compressed');
-
         if (!fs.existsSync(outputDir)) {
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
-        // Define filter based on type
-        const filter = (filePath) => {
-            if (type === 'image') return isImage(filePath);
-            if (type === 'video') return isVideo(filePath);
-            return isImage(filePath) || isVideo(filePath);
-        };
+        clearCaptureDateCache();
 
-        const allFiles = options.recursive
-            ? getFilesRecursive(inputPath, filter)
-            : fs.readdirSync(inputPath)
-                .map(f => path.join(inputPath, f))
-                .filter(f => fs.statSync(f).isFile() && filter(f));
+        const extFilter = (filePath) => isImage(filePath) || isVideo(filePath);
+        const scannedFiles = await scanFilesAsync(inputPath, extFilter, Boolean(options.recursive));
+        const allItems = scannedFiles.filter(item => {
+            if (type === 'image') return item.type === 'image';
+            if (type === 'video') return item.type === 'video';
+            return true;
+        });
 
-        if (allFiles.length === 0) {
+        if (allItems.length === 0) {
             console.log(chalk.yellow(`No supported ${type === 'all' ? 'image or video' : type} files found.`));
             return;
         }
 
-        // Separate images and videos
-        const imageFiles = allFiles.filter(f => isImage(f));
-        const videoFiles = allFiles.filter(f => isVideo(f));
+        const imageItems = allItems.filter(item => item.type === 'image');
+        const videoItems = allItems.filter(item => item.type === 'video');
+        const reservedOutputPaths = new Set();
+        const imageFormat = validateImageFormat(options.imageFormat || 'webp');
+        const quality = validateQuality(options.quality);
 
-        // Helper to determine output directory per file
-        const determineTargetFile = async (filePath) => {
+        const determineTargetFile = async (filePath, actualType) => {
             let targetDir;
-
             if (options.flatten) {
-                // FLATTEN: All files go directly to output root (No subfolders)
                 targetDir = outputDir;
             } else if (options.organize) {
-                // ORGANIZE: YYYY-MM folders
                 const date = await getCaptureDate(filePath);
                 const folderName = formatDateForFolder(date);
                 targetDir = path.join(outputDir, folderName);
             } else {
-                // DEFAULT: Mirror input directory structure
                 const relativePath = path.relative(inputPath, path.dirname(filePath));
                 targetDir = path.join(outputDir, relativePath);
             }
 
-            ensureDirectoryExists(path.join(targetDir, 'dummy.txt')); // Ensure dir exists
-
-            // Calculate base filename (e.g. image.jpg)
+            ensureDirCached(targetDir);
             const baseOutputPath = path.join(targetDir, path.basename(filePath));
-
-            // Apply renaming if requested
-            // OR if flattening caused a collision (getFinalOutputPath handles collisions if rename is on, 
-            // but we need to handle collisions even if rename is OFF when flattening)
-
-            if (options.rename) {
-                return await getFinalOutputPath(filePath, options, baseOutputPath);
-            } else {
-                // Normalize extension for consistent format (WebP/JPEG/AVIF for images, .mp4 for videos)
-                const imageFormat = options.imageFormat || 'webp';
-                const normalizedPath = normalizeOutputExtension(baseOutputPath, imageFormat);
-
-                // Handle name collisions in Flatten mode without renaming by date
-                let finalPath = normalizedPath;
-                let counter = 1;
-                const ext = path.extname(normalizedPath);
-                const name = path.basename(normalizedPath, ext);
-                const dir = path.dirname(normalizedPath);
-
-                while (fs.existsSync(finalPath)) {
-                    finalPath = path.join(dir, `${name}_${counter}${ext}`);
-                    counter++;
-                }
-                return finalPath;
-            }
+            return getFinalOutputPath(filePath, { ...options, imageFormat }, baseOutputPath, reservedOutputPaths, actualType);
         };
 
-        // Calculate concurrency
         const concurrency = options.jobs ? Math.max(1, parseInt(options.jobs, 10) || 1) : getOptimalConcurrency();
         const cpuInfo = `${os.cpus().length} cores detected`;
 
@@ -171,9 +162,9 @@ async function processDirectory(inputDir, options, type = 'all') {
         if (options.flatten) structureType = 'Flattened (All in Root)';
         else if (options.organize) structureType = 'Organized by Date (YYYY-MM)';
 
-        console.log(chalk.blue(`📁 Found ${allFiles.length} file(s) to ${options.renameOnly ? 'organize' : 'compress'}`));
-        if (type !== 'video') console.log(chalk.gray(`   Images: ${imageFiles.length}`));
-        if (type !== 'image') console.log(chalk.gray(`   Videos: ${videoFiles.length}`));
+        console.log(chalk.blue(`📁 Found ${allItems.length} file(s) to ${options.renameOnly ? 'organize' : 'compress'}`));
+        if (type !== 'video') console.log(chalk.gray(`   Images: ${imageItems.length}`));
+        if (type !== 'image') console.log(chalk.gray(`   Videos: ${videoItems.length}`));
         console.log(chalk.gray(`   Recursive Scan: ${options.recursive ? 'Yes' : 'No'}`));
         console.log(chalk.gray(`   Output Structure: ${structureType}`));
         console.log(chalk.gray(`   Mode: ${options.renameOnly ? 'RENAME & COPY ONLY' : 'COMPRESS'}`));
@@ -184,111 +175,138 @@ async function processDirectory(inputDir, options, type = 'all') {
         let successCount = 0;
         let failCount = 0;
 
-        // Process images in parallel (they're fast and CPU-bound)
-        if (imageFiles.length > 0) {
-            console.log(chalk.blue(`🖼️  Processing ${imageFiles.length} image(s) in parallel (${concurrency} jobs)....\n`));
+        if (imageItems.length > 0) {
+            configureSharpConcurrency(concurrency);
+            console.log(chalk.blue(`🖼️  Processing ${imageItems.length} image(s) in parallel (${concurrency} jobs)....\n`));
 
-            const imageResults = await parallelProcess(
-                imageFiles,
-                async (filePath) => {
+            await parallelProcess(
+                imageItems,
+                async (item) => {
+                    const filePath = item.path;
                     const fileName = path.basename(filePath);
+                    let currentOutputPath = null;
                     try {
-                        const currentOutputPath = await determineTargetFile(filePath);
+                        currentOutputPath = await determineTargetFile(filePath, 'image');
+                        const inputStat = await fs.promises.stat(filePath);
 
                         if (options.renameOnly) {
-                            const ext = path.extname(filePath).toLowerCase();
-
-                            // HEIC/HEIF files must be converted even in renameOnly mode
-                            if (ext === '.heic' || ext === '.heif') {
+                            const fmt = (item.actualFormat || path.extname(filePath).slice(1)).toLowerCase();
+                            if (fmt === 'heic' || fmt === 'heif') {
                                 const result = await compressImage(filePath, currentOutputPath, {
-                                    quality: validateQuality(options.quality)
+                                    quality,
+                                    originalSize: inputStat.size,
+                                    actualFormat: item.actualFormat,
+                                    skipDirCheck: true
                                 });
-                                setFileMetadata(filePath, currentOutputPath);
+                                await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
                                 totalOriginal += result.originalSize;
                                 totalCompressed += result.compressedSize;
                                 successCount++;
                                 console.log(chalk.green(`   ✓ ${path.basename(currentOutputPath)}: Converted from HEIC`));
-                                return result;
+                                return;
                             }
 
-                            // Other formats: just copy with new extension
-                            fs.copyFileSync(filePath, currentOutputPath);
-                            setFileMetadata(filePath, currentOutputPath);
-                            const size = fs.statSync(filePath).size;
-                            totalOriginal += size;
-                            totalCompressed += size; // No savings
+                            await fs.promises.copyFile(filePath, currentOutputPath);
+                            await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
+                            totalOriginal += inputStat.size;
+                            totalCompressed += inputStat.size;
                             successCount++;
                             console.log(chalk.green(`   ✓ ${path.basename(currentOutputPath)}: Copied/Renamed`));
-                            return { originalSize: size, compressedSize: size, savings: '0%' };
+                            return;
                         }
 
                         const result = await compressImage(filePath, currentOutputPath, {
-                            quality: validateQuality(options.quality)
+                            quality,
+                            originalSize: inputStat.size,
+                            actualFormat: item.actualFormat,
+                            skipDirCheck: true
                         });
-                        setFileMetadata(filePath, currentOutputPath);
+                        await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
 
                         totalOriginal += result.originalSize;
                         totalCompressed += result.compressedSize;
                         successCount++;
 
                         console.log(chalk.green(`   ✓ ${path.basename(currentOutputPath)}: ${result.originalSizeFormatted} → ${result.compressedSizeFormatted} (${result.savings} saved)`));
-                        return result;
                     } catch (error) {
                         console.log(chalk.yellow(`   ⚠ ${fileName}: Compression failed (${error.message}). Copying original instead...`));
-                        const currentOutputPath = await determineTargetFile(filePath);
-                        fs.copyFileSync(filePath, currentOutputPath);
-                        setFileMetadata(filePath, currentOutputPath);
-                        const originalSize = fs.statSync(filePath).size;
+                        if (!currentOutputPath) currentOutputPath = await determineTargetFile(filePath, 'image');
+                        const inputStat = await fs.promises.stat(filePath);
+                        if (inputStat.size > 0) {
+                            await fs.promises.copyFile(filePath, currentOutputPath);
+                            await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
+                        }
 
-                        totalOriginal += originalSize;
-                        totalCompressed += originalSize;
+                        totalOriginal += inputStat.size;
+                        totalCompressed += inputStat.size;
                         successCount++;
                         failCount++;
-
-                        return { originalSize, compressedSize: originalSize, savings: '0% (copied)' };
                     }
                 },
-                concurrency
+                concurrency,
+                { collectResults: false }
             );
         }
 
-        // Process videos in parallel (I/O and CPU heavy)
-        if (videoFiles.length > 0) {
-            const videoConcurrency = getRecommendedVideoConcurrency(videoFiles.length);
-            console.log(chalk.blue(`\n🎬 Processing videos in parallel (${videoConcurrency} jobs)...\n`));
+        if (videoItems.length > 0) {
+            const requestedEncoder = validateEncoder(options.encoder);
+            const encoderConfig = await getEncoderConfig(requestedEncoder);
+            const videoConcurrency = getRecommendedVideoConcurrency(videoItems.length, encoderConfig.type);
+            const videoThreads = getOptimalVideoThreads(videoConcurrency, {
+                encoderType: encoderConfig.type,
+                overlapWithImages: false
+            });
+            const baseCrf = validateCrf(options.crf);
+
+            // Largest-First (LPT) scheduling avoids tail stragglers
+            const sortedVideos = [...videoItems].sort((a, b) => (b.size || 0) - (a.size || 0));
+
+            console.log(chalk.blue(`\n🎬 Processing videos in parallel (${videoConcurrency} jobs, ${videoThreads} threads/job, ${encoderConfig.type})...\n`));
 
             await parallelProcess(
-                videoFiles,
-                async (filePath) => {
+                sortedVideos,
+                async (item) => {
+                    const filePath = item.path;
                     const fileName = path.basename(filePath);
+                    let currentOutputPath = null;
+                    let currentCmd = null;
                     try {
-                        const currentOutputPath = await determineTargetFile(filePath);
+                        currentOutputPath = await determineTargetFile(filePath, 'video');
+                        const inputStat = await fs.promises.stat(filePath);
 
                         if (options.renameOnly) {
-                            fs.copyFileSync(filePath, currentOutputPath);
-                            setFileMetadata(filePath, currentOutputPath);
-                            const size = fs.statSync(filePath).size;
-                            totalOriginal += size;
-                            totalCompressed += size; // No savings
+                            await fs.promises.copyFile(filePath, currentOutputPath);
+                            await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
+                            totalOriginal += inputStat.size;
+                            totalCompressed += inputStat.size;
                             successCount++;
                             console.log(chalk.green(`   ✓ ${path.basename(currentOutputPath)}: Copied/Renamed`));
                             return;
                         }
 
                         console.log(chalk.gray(`   Processing: ${fileName}...`));
-                        let currentCmd = null;
+                        let videoInfo = null;
+                        let adaptiveCrf = baseCrf;
+                        try {
+                            videoInfo = await probeVideo(filePath);
+                            if (videoInfo) adaptiveCrf = getAdaptiveCrf(baseCrf, videoInfo);
+                        } catch {}
+
                         const result = await compressVideo(filePath, currentOutputPath, {
-                            crf: validateCrf(options.crf),
+                            crf: adaptiveCrf,
                             preset: options.preset || 'medium',
-                            encoder: validateEncoder(options.encoder),
+                            encoder: requestedEncoder,
+                            threads: videoThreads,
+                            originalSize: inputStat.size,
+                            skipDirCheck: true,
+                            videoInfo,
                             onStart: (cmd) => {
                                 currentCmd = cmd;
                                 activeProcesses.add(cmd);
                             }
                         });
 
-                        if (currentCmd) activeProcesses.delete(currentCmd);
-                        setFileMetadata(filePath, currentOutputPath);
+                        await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
 
                         totalOriginal += result.originalSize;
                         totalCompressed += result.compressedSize;
@@ -297,18 +315,24 @@ async function processDirectory(inputDir, options, type = 'all') {
                         console.log(chalk.green(`   ✓ ${path.basename(currentOutputPath)}: ${result.originalSizeFormatted} → ${result.compressedSizeFormatted} (${result.savings} saved)`));
                     } catch (error) {
                         console.log(chalk.yellow(`   ⚠ ${fileName}: Compression failed (${error.message || error.error || 'Unknown error'}). Copying original...`));
-                        const currentOutputPath = await determineTargetFile(filePath);
-                        fs.copyFileSync(filePath, currentOutputPath);
-                        setFileMetadata(filePath, currentOutputPath);
-                        const originalSize = fs.statSync(filePath).size;
+                        if (!currentOutputPath) currentOutputPath = await determineTargetFile(filePath, 'video');
+                        const inputStat = await fs.promises.stat(filePath);
+                        if (inputStat.size > 0) {
+                            await fs.promises.copyFile(filePath, currentOutputPath);
+                            await setFileMetadataAsync(filePath, currentOutputPath, inputStat);
+                        }
 
-                        totalOriginal += originalSize;
-                        totalCompressed += originalSize;
+                        totalOriginal += inputStat.size;
+                        totalCompressed += inputStat.size;
                         successCount++;
                         failCount++;
+                    } finally {
+                        if (currentCmd) activeProcesses.delete(currentCmd);
+                        evictProbeCache(filePath);
                     }
                 },
-                videoConcurrency
+                videoConcurrency,
+                { collectResults: false }
             );
         }
 
@@ -316,7 +340,7 @@ async function processDirectory(inputDir, options, type = 'all') {
         const durationSeconds = ((endTime - startTime) / 1000).toFixed(1);
 
         console.log(chalk.blue('\n📊 Summary Report'));
-        console.log(chalk.white(`   Files processed:  ${successCount}/${allFiles.length}`));
+        console.log(chalk.white(`   Files processed:  ${successCount}/${allItems.length}`));
         if (failCount > 0) console.log(chalk.red(`   Failed:           ${failCount}`));
         console.log(chalk.white(`   Time taken:       ${durationSeconds}s`));
         console.log(chalk.white(`   Total original:   ${formatFileSize(totalOriginal)}`));
@@ -326,16 +350,16 @@ async function processDirectory(inputDir, options, type = 'all') {
     } catch (error) {
         console.error(chalk.red(`Error: ${error.message}`));
         process.exit(1);
+    } finally {
+        await shutdownHeicPool().catch(() => {});
     }
 }
 
-// Configure CLI
 program
     .name('compress')
     .description('CLI tool to compress images and videos')
     .version(packageJson.version);
 
-// Image compression command
 program
     .command('image <input>')
     .description('Compress an image file OR directory of images (supports: jpg, png, webp, avif, tiff, gif, heic)')
@@ -343,7 +367,7 @@ program
     .option('-q, --quality <number>', 'Quality level (1-100, default: 88)', '88')
     .option('--image-format <format>', 'Target image format: jpeg, webp, avif (default: webp)', 'webp')
     .option('--rename', 'Rename file based on capture date (yyyymmdd-hhmmss)', false)
-    .option('--rename-only', 'Rename and copy files without compressing', false) // ADDED
+    .option('--rename-only', 'Rename and copy files without compressing', false)
     .option('-r, --recursive', 'Search directories recursively (if input is directory)', false)
     .option('--flatten', 'Put all files directly in output folder (no subfolders)', false)
     .option('--organize', 'Organize output into folders by date (YYYY-MM)', false)
@@ -362,18 +386,18 @@ program
                 return;
             }
 
-            // Single File Mode
             if (!isImage(inputPath)) {
                 console.error(chalk.red('Error: Input file is not a supported image format'));
                 process.exit(1);
             }
 
+            let currentOutputPath = null;
             try {
-                let currentOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
+                currentOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
 
                 if (options.renameOnly) {
-                    fs.copyFileSync(inputPath, currentOutputPath);
-                    setFileMetadata(inputPath, currentOutputPath);
+                    await fs.promises.copyFile(inputPath, currentOutputPath);
+                    await setFileMetadataAsync(inputPath, currentOutputPath);
                     console.log(chalk.green('\n✅ File copied and renamed (No compression).'));
                     return;
                 }
@@ -383,7 +407,7 @@ program
                 console.log(chalk.gray(`   Output: ${currentOutputPath}`));
 
                 const result = await compressImage(inputPath, currentOutputPath, { quality: validateQuality(options.quality) });
-                setFileMetadata(inputPath, currentOutputPath);
+                await setFileMetadataAsync(inputPath, currentOutputPath);
 
                 console.log(chalk.green('\n✅ Compression complete!'));
                 console.log(chalk.white(`   Original:   ${result.originalSizeFormatted}`));
@@ -391,11 +415,14 @@ program
                 console.log(chalk.cyan(`   Saved:      ${result.savings}`));
             } catch (error) {
                 console.log(chalk.yellow(`\n⚠ Compression failed (${error.message}). Copying original instead...`));
-                const finalOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
-
-                fs.copyFileSync(inputPath, finalOutputPath);
-                setFileMetadata(inputPath, finalOutputPath);
+                if (!currentOutputPath) {
+                    currentOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
+                }
+                await fs.promises.copyFile(inputPath, currentOutputPath);
+                await setFileMetadataAsync(inputPath, currentOutputPath);
                 console.log(chalk.green('✅ Original file copied to output with metadata preserved.'));
+            } finally {
+                await shutdownHeicPool().catch(() => {});
             }
         } catch (error) {
             console.error(chalk.red(`Error: ${error.message}`));
@@ -403,7 +430,6 @@ program
         }
     });
 
-// Video compression command
 program
     .command('video <input>')
     .description('Compress a video file OR directory of videos (supports: mp4, mkv, avi, mov, wmv, flv, webm, 3gp)')
@@ -430,18 +456,18 @@ program
                 return;
             }
 
-            // Single File Mode
             if (!isVideo(inputPath)) {
                 console.error(chalk.red('Error: Input file is not a supported video format'));
                 process.exit(1);
             }
 
+            let currentOutputPath = null;
             try {
-                let currentOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
+                currentOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
 
                 if (options.renameOnly) {
-                    fs.copyFileSync(inputPath, currentOutputPath);
-                    setFileMetadata(inputPath, currentOutputPath);
+                    await fs.promises.copyFile(inputPath, currentOutputPath);
+                    await setFileMetadataAsync(inputPath, currentOutputPath);
                     console.log(chalk.green('\n✅ File copied and renamed (No compression).'));
                     return;
                 }
@@ -457,7 +483,7 @@ program
                 const result = await compressVideo(inputPath, currentOutputPath, {
                     crf,
                     preset: options.preset,
-                    encoder: encoder,
+                    encoder,
                     onStart: (cmd) => activeProcesses.add(cmd),
                     onProgress: (progress) => {
                         if (progress.percent) {
@@ -467,7 +493,7 @@ program
                 });
 
                 activeProcesses.clear();
-                setFileMetadata(inputPath, currentOutputPath);
+                await setFileMetadataAsync(inputPath, currentOutputPath);
 
                 console.log(chalk.green('\n\n✅ Compression complete!'));
                 console.log(chalk.white(`   Original:   ${result.originalSizeFormatted}`));
@@ -475,10 +501,11 @@ program
                 console.log(chalk.cyan(`   Saved:      ${result.savings}`));
             } catch (error) {
                 console.log(chalk.yellow(`\n\n⚠ Compression failed (${error.message || error.error}). Copying original instead...`));
-                const finalOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
-
-                fs.copyFileSync(inputPath, finalOutputPath);
-                setFileMetadata(inputPath, finalOutputPath);
+                if (!currentOutputPath) {
+                    currentOutputPath = await getFinalOutputPath(inputPath, options, generateOutputPath(inputPath, options.output));
+                }
+                await fs.promises.copyFile(inputPath, currentOutputPath);
+                await setFileMetadataAsync(inputPath, currentOutputPath);
                 console.log(chalk.green('✅ Original file copied to output with metadata preserved.'));
             }
         } catch (error) {
@@ -487,7 +514,6 @@ program
         }
     });
 
-// Batch compression command
 program
     .command('all <inputDir>')
     .description('Compress all images and videos in a directory')
@@ -507,5 +533,4 @@ program
         await processDirectory(inputDir, options, 'all');
     });
 
-// Parse arguments
 program.parse();
